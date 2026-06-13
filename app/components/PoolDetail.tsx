@@ -6,6 +6,7 @@ import Link from "next/link";
 import Countdown from "@/components/Countdown";
 import JoinPool from "@/components/JoinPool";
 import BackGoal from "@/components/BackGoal";
+import ClaimPrivately from "@/components/ClaimPrivately";
 import FundPool from "@/components/FundPool";
 import EvidenceUpload from "@/components/EvidenceUpload";
 import { Badge, ErrorNote, Skeleton, Stat } from "@/components/ui";
@@ -214,6 +215,10 @@ export default function PoolDetail({ id }: { id: string }) {
           <section className="rounded-2xl border border-edge bg-surface p-5">
             <BackGoal poolId={pool.id} />
           </section>
+
+          {hasJoined ? (
+            <ClaimPrivately poolId={String(pool.id)} />
+          ) : null}
         </div>
       ) : (
         <section className="rounded-2xl border border-edge bg-surface p-5">
