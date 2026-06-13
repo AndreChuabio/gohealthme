@@ -1,0 +1,58 @@
+"use client";
+
+import { useQuery } from "@tanstack/react-query";
+import PoolCard from "@/components/PoolCard";
+import { EmptyState, ErrorNote, PoolCardSkeleton } from "@/components/ui";
+import { fetchPools } from "@/lib/contract";
+
+export default function PoolsPage() {
+  const poolsQuery = useQuery({
+    queryKey: ["pools"],
+    queryFn: fetchPools,
+  });
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">
+          Bounty pools
+        </h1>
+        <p className="mt-1 text-sm text-muted">
+          Live sponsor-funded pools on Arc testnet. Join with World ID, hit
+          the goal, get paid in USDC.
+        </p>
+      </div>
+
+      {poolsQuery.isLoading ? (
+        <div className="grid gap-4 sm:grid-cols-2">
+          <PoolCardSkeleton />
+          <PoolCardSkeleton />
+          <PoolCardSkeleton />
+        </div>
+      ) : poolsQuery.isError ? (
+        <ErrorNote
+          title="Could not load pools"
+          detail={
+            poolsQuery.error instanceof Error
+              ? poolsQuery.error.message
+              : "Unknown error reading from Arc testnet."
+          }
+          onRetry={() => {
+            void poolsQuery.refetch();
+          }}
+        />
+      ) : (poolsQuery.data ?? []).length === 0 ? (
+        <EmptyState
+          title="No pools yet"
+          detail="Pools appear here the moment a sponsor creates one on Arc. Check back shortly."
+        />
+      ) : (
+        <div className="grid gap-4 sm:grid-cols-2">
+          {(poolsQuery.data ?? []).map((pool) => (
+            <PoolCard key={pool.id.toString()} pool={pool} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}

@@ -1,0 +1,390 @@
+import {
+  createPublicClient,
+  fallback,
+  formatUnits,
+  http,
+  parseAbiItem,
+  parseUnits,
+  type Address,
+  type PublicClient,
+} from "viem";
+import { arcTestnet } from "@/lib/chains";
+
+// ---------------------------------------------------------------- addresses
+
+/** Canonical USDC ERC-20 interface on Arc testnet (6 decimals). */
+export const USDC_ADDRESS: Address =
+  "0x3600000000000000000000000000000000000000";
+
+export const USDC_DECIMALS = 6;
+
+/**
+ * HealthPools deployment address. Set NEXT_PUBLIC_HEALTH_POOLS_ADDRESS once
+ * the contract agent deploys; pages surface a visible configuration error
+ * until then rather than failing silently.
+ */
+export function getHealthPoolsAddress(): Address | null {
+  const raw = process.env.NEXT_PUBLIC_HEALTH_POOLS_ADDRESS;
+  if (raw === undefined || raw === "") return null;
+  if (!/^0x[0-9a-fA-F]{40}$/.test(raw)) return null;
+  return raw as Address;
+}
+
+// ---------------------------------------------------------------------- abi
+
+export const healthPoolsAbi = [
+  {
+    type: "function",
+    name: "createPool",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "initiative", type: "string" },
+      { name: "goalSpec", type: "string" },
+      { name: "entryFee", type: "uint256" },
+      { name: "periodStart", type: "uint64" },
+      { name: "periodEnd", type: "uint64" },
+      { name: "bountyModel", type: "uint8" },
+      { name: "initialFunding", type: "uint256" },
+    ],
+    outputs: [{ name: "poolId", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "joinPool",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "poolId", type: "uint256" },
+      { name: "nullifierHash", type: "uint256" },
+    ],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "recordResult",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "poolId", type: "uint256" },
+      { name: "user", type: "address" },
+      { name: "verdict", type: "bool" },
+      { name: "multiplierBps", type: "uint16" },
+    ],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "settle",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "poolId", type: "uint256" }],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "backGoal",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "poolId", type: "uint256" },
+      { name: "user", type: "address" },
+      { name: "amount", type: "uint256" },
+    ],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "fundPool",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "poolId", type: "uint256" },
+      { name: "amount", type: "uint256" },
+    ],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "getPool",
+    stateMutability: "view",
+    inputs: [{ name: "poolId", type: "uint256" }],
+    outputs: [
+      {
+        name: "pool",
+        type: "tuple",
+        components: [
+          { name: "creator", type: "address" },
+          { name: "bountyModel", type: "uint8" },
+          { name: "settled", type: "bool" },
+          { name: "periodStart", type: "uint64" },
+          { name: "periodEnd", type: "uint64" },
+          { name: "entryFee", type: "uint256" },
+          { name: "balance", type: "uint256" },
+          { name: "initiative", type: "string" },
+          { name: "goalSpec", type: "string" },
+        ],
+      },
+    ],
+  },
+  {
+    type: "function",
+    name: "getParticipant",
+    stateMutability: "view",
+    inputs: [
+      { name: "poolId", type: "uint256" },
+      { name: "user", type: "address" },
+    ],
+    outputs: [
+      {
+        name: "participant",
+        type: "tuple",
+        components: [
+          { name: "joined", type: "bool" },
+          { name: "resultRecorded", type: "bool" },
+          { name: "verdict", type: "bool" },
+          { name: "multiplierBps", type: "uint16" },
+          { name: "nullifierHash", type: "uint256" },
+          { name: "backingTotal", type: "uint256" },
+        ],
+      },
+    ],
+  },
+  {
+    type: "function",
+    name: "getParticipants",
+    stateMutability: "view",
+    inputs: [{ name: "poolId", type: "uint256" }],
+    outputs: [{ name: "", type: "address[]" }],
+  },
+  {
+    type: "function",
+    name: "poolCount",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "event",
+    name: "PoolCreated",
+    inputs: [
+      { name: "poolId", type: "uint256", indexed: true },
+      { name: "creator", type: "address", indexed: true },
+      { name: "initiative", type: "string", indexed: false },
+      { name: "goalSpec", type: "string", indexed: false },
+      { name: "entryFee", type: "uint256", indexed: false },
+      { name: "periodStart", type: "uint64", indexed: false },
+      { name: "periodEnd", type: "uint64", indexed: false },
+      { name: "bountyModel", type: "uint8", indexed: false },
+    ],
+  },
+] as const;
+
+export const poolCreatedEvent = parseAbiItem(
+  "event PoolCreated(uint256 indexed poolId, address indexed creator, string initiative, string goalSpec, uint256 entryFee, uint64 periodStart, uint64 periodEnd, uint8 bountyModel)",
+);
+
+export const erc20Abi = [
+  {
+    type: "function",
+    name: "approve",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "spender", type: "address" },
+      { name: "amount", type: "uint256" },
+    ],
+    outputs: [{ name: "", type: "bool" }],
+  },
+  {
+    type: "function",
+    name: "allowance",
+    stateMutability: "view",
+    inputs: [
+      { name: "owner", type: "address" },
+      { name: "spender", type: "address" },
+    ],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "balanceOf",
+    stateMutability: "view",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+] as const;
+
+// ------------------------------------------------------------------ clients
+
+let cachedClient: PublicClient | null = null;
+
+/** Shared Arc testnet public client with RPC fallbacks for flaky venue WiFi. */
+export function getArcPublicClient(): PublicClient {
+  if (cachedClient === null) {
+    cachedClient = createPublicClient({
+      chain: arcTestnet,
+      transport: fallback([
+        http("https://rpc.testnet.arc.network"),
+        http("https://rpc.blockdaemon.testnet.arc.network"),
+        http("https://rpc.drpc.testnet.arc.network"),
+      ]),
+    });
+  }
+  return cachedClient;
+}
+
+// -------------------------------------------------------------------- types
+
+export interface PoolInfo {
+  id: bigint;
+  creator: Address;
+  bountyModel: number;
+  settled: boolean;
+  periodStart: bigint;
+  periodEnd: bigint;
+  entryFee: bigint;
+  balance: bigint;
+  initiative: string;
+  goalSpec: string;
+}
+
+export interface ParticipantInfo {
+  joined: boolean;
+  resultRecorded: boolean;
+  verdict: boolean;
+  multiplierBps: number;
+  nullifierHash: bigint;
+  backingTotal: bigint;
+}
+
+export class ContractNotConfiguredError extends Error {
+  constructor() {
+    super(
+      "HealthPools contract address is not configured. Set NEXT_PUBLIC_HEALTH_POOLS_ADDRESS and redeploy.",
+    );
+    this.name = "ContractNotConfiguredError";
+  }
+}
+
+// -------------------------------------------------------------------- reads
+
+async function readPool(address: Address, id: bigint): Promise<PoolInfo> {
+  const client = getArcPublicClient();
+  const pool = await client.readContract({
+    address,
+    abi: healthPoolsAbi,
+    functionName: "getPool",
+    args: [id],
+  });
+  return {
+    id,
+    creator: pool.creator,
+    bountyModel: pool.bountyModel,
+    settled: pool.settled,
+    periodStart: pool.periodStart,
+    periodEnd: pool.periodEnd,
+    entryFee: pool.entryFee,
+    balance: pool.balance,
+    initiative: pool.initiative,
+    goalSpec: pool.goalSpec,
+  };
+}
+
+/**
+ * Discover pools via PoolCreated logs, falling back to sequential poolCount
+ * enumeration if the RPC rejects the log query (pool ids run 1..poolCount).
+ */
+export async function fetchPools(): Promise<PoolInfo[]> {
+  const address = getHealthPoolsAddress();
+  if (address === null) throw new ContractNotConfiguredError();
+  const client = getArcPublicClient();
+
+  let ids: bigint[] = [];
+  try {
+    const logs = await client.getLogs({
+      address,
+      event: poolCreatedEvent,
+      fromBlock: 0n,
+      toBlock: "latest",
+    });
+    ids = logs
+      .map((log) => log.args.poolId)
+      .filter((id): id is bigint => id !== undefined);
+  } catch {
+    ids = [];
+  }
+
+  if (ids.length === 0) {
+    const count = await client.readContract({
+      address,
+      abi: healthPoolsAbi,
+      functionName: "poolCount",
+    });
+    ids = Array.from({ length: Number(count) }, (_, i) => BigInt(i + 1));
+  }
+
+  const unique = Array.from(new Set(ids.map((id) => id.toString()))).map(
+    (s) => BigInt(s),
+  );
+  const pools = await Promise.all(unique.map((id) => readPool(address, id)));
+  return pools.sort((a, b) => (a.id < b.id ? -1 : 1));
+}
+
+export async function fetchPool(id: bigint): Promise<PoolInfo> {
+  const address = getHealthPoolsAddress();
+  if (address === null) throw new ContractNotConfiguredError();
+  return readPool(address, id);
+}
+
+export async function fetchParticipants(id: bigint): Promise<Address[]> {
+  const address = getHealthPoolsAddress();
+  if (address === null) throw new ContractNotConfiguredError();
+  const client = getArcPublicClient();
+  const list = await client.readContract({
+    address,
+    abi: healthPoolsAbi,
+    functionName: "getParticipants",
+    args: [id],
+  });
+  return [...list];
+}
+
+export async function fetchParticipant(
+  id: bigint,
+  user: Address,
+): Promise<ParticipantInfo> {
+  const address = getHealthPoolsAddress();
+  if (address === null) throw new ContractNotConfiguredError();
+  const client = getArcPublicClient();
+  const p = await client.readContract({
+    address,
+    abi: healthPoolsAbi,
+    functionName: "getParticipant",
+    args: [id, user],
+  });
+  return {
+    joined: p.joined,
+    resultRecorded: p.resultRecorded,
+    verdict: p.verdict,
+    multiplierBps: p.multiplierBps,
+    nullifierHash: p.nullifierHash,
+    backingTotal: p.backingTotal,
+  };
+}
+
+// ------------------------------------------------------------------ helpers
+
+export function formatUsdc(amount: bigint): string {
+  const value = Number(formatUnits(amount, USDC_DECIMALS));
+  return value.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+export function parseUsdc(input: string): bigint {
+  return parseUnits(input, USDC_DECIMALS);
+}
+
+export function shortAddress(address: string): string {
+  return `${address.slice(0, 6)}...${address.slice(-4)}`;
+}
+
+export const BOUNTY_MODEL_LABELS: Record<number, string> = {
+  0: "Fixed bounty per achiever",
+  1: "Pro-rata pot split",
+};

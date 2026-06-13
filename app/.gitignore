@@ -24,6 +24,9 @@
 .DS_Store
 *.pem
 
+# server-side token and verification state (contains WHOOP OAuth tokens)
+/.data/
+
 # debug
 npm-debug.log*
 yarn-debug.log*
