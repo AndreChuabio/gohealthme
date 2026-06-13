@@ -1,13 +1,16 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useEmbeddedWallet } from "@/lib/wallet";
+import { deriveUnlinkAccount, ARC_USDC_ADDRESS } from "@/lib/unlink/browser";
+import { toBaseUnits } from "@/lib/usdc";
+import type { UnlinkClient } from "@unlink-xyz/sdk/browser";
 
 type Phase =
   | "idle"
-  | "provisioning"
+  | "deriving"
   | "claiming"
-  | "done"
+  | "claimed"
   | "withdrawing"
   | "withdrawn"
   | "error";
@@ -37,12 +40,16 @@ export default function ClaimPrivately({
   poolId: string;
   rewardUsdc?: string;
 }) {
-  const { address, authenticated } = useEmbeddedWallet();
+  const { address, authenticated, getArcWalletClient } = useEmbeddedWallet();
   const [phase, setPhase] = useState<Phase>("idle");
   const [error, setError] = useState<string | null>(null);
+  // Keep the derived client alive across phases (needed for the withdraw step).
+  const clientRef = useRef<UnlinkClient | null>(null);
 
   const busy =
-    phase === "provisioning" || phase === "claiming" || phase === "withdrawing";
+    phase === "deriving" ||
+    phase === "claiming" ||
+    phase === "withdrawing";
 
   async function claim() {
     setError(null);
@@ -52,18 +59,24 @@ export default function ClaimPrivately({
       return;
     }
     try {
-      setPhase("provisioning");
-      await postJson("/api/unlink/account", { address });
+      // Phase 1: sign + derive the user's non-custodial Unlink account.
+      setPhase("deriving");
+      const walletClient = await getArcWalletClient();
+      const { client, unlinkAddress } = await deriveUnlinkAccount(walletClient);
+      clientRef.current = client;
 
+      // Phase 2: POST to treasury payout route with the derived unlink address.
       setPhase("claiming");
       const goalId = `pool-${poolId}-${address}`;
       await postJson("/api/unlink/payout", {
         address,
         poolId,
         goalId,
+        unlinkAddress,
         rewardUsdc,
       });
-      setPhase("done");
+
+      setPhase("claimed");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setPhase("error");
@@ -73,9 +86,21 @@ export default function ClaimPrivately({
   async function withdraw() {
     setError(null);
     if (address === null) return;
+    const client = clientRef.current;
+    if (client === null) {
+      setError("Derive your account first by clicking Claim.");
+      setPhase("error");
+      return;
+    }
     try {
       setPhase("withdrawing");
-      await postJson("/api/unlink/withdraw", { address, amountUsdc: rewardUsdc });
+      const handle = await client.withdraw({
+        recipientEvmAddress: address,
+        token: ARC_USDC_ADDRESS,
+        amount: toBaseUnits(rewardUsdc),
+      });
+      // Wait for the withdrawal to reach a terminal status.
+      await handle.wait();
       setPhase("withdrawn");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -87,12 +112,14 @@ export default function ClaimPrivately({
     <div className="rounded-2xl border border-accent/40 bg-surface p-5">
       <h2 className="text-lg font-semibold">Receive this reward privately</h2>
       <p className="mb-4 mt-1 text-sm text-muted">
-        Paid into your private Unlink account on Arc, then withdrawn to a wallet
-        of your choice. There is no on-chain link between this health goal and
-        the wallet that receives the funds.
+        Your reward is paid into a private Unlink account on Arc that only you
+        control — derived from your own wallet signature. There is no on-chain
+        link between this health goal and the wallet that receives the funds.
       </p>
 
-      {phase !== "done" && phase !== "withdrawn" && phase !== "withdrawing" ? (
+      {phase !== "claimed" &&
+      phase !== "withdrawn" &&
+      phase !== "withdrawing" ? (
         <button
           type="button"
           onClick={() => {
@@ -101,15 +128,17 @@ export default function ClaimPrivately({
           disabled={busy}
           className="rounded-xl bg-accent-strong px-4 py-2 text-sm font-semibold text-background disabled:opacity-50"
         >
-          {phase === "provisioning"
-            ? "Setting up private account…"
+          {phase === "deriving"
+            ? "Signing to derive your private account…"
             : phase === "claiming"
               ? "Sending private payment…"
               : `Claim ${rewardUsdc} USDC privately`}
         </button>
       ) : null}
 
-      {phase === "done" || phase === "withdrawing" || phase === "withdrawn" ? (
+      {phase === "claimed" ||
+      phase === "withdrawing" ||
+      phase === "withdrawn" ? (
         <div className="space-y-3">
           <p className="rounded-xl border border-dashed border-accent/30 bg-accent-deep/20 p-3 text-sm text-accent">
             Reward delivered to your private account. The transfer is shielded —
@@ -124,7 +153,9 @@ export default function ClaimPrivately({
               disabled={phase === "withdrawing"}
               className="rounded-xl border border-edge px-4 py-2 text-sm font-semibold disabled:opacity-50"
             >
-              {phase === "withdrawing" ? "Withdrawing…" : "Withdraw to my wallet"}
+              {phase === "withdrawing"
+                ? "Withdrawing…"
+                : "Withdraw to my wallet"}
             </button>
           ) : (
             <p className="text-sm text-accent">
