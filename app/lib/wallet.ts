@@ -27,9 +27,9 @@ export interface EmbeddedWalletState {
  * Dynamic-backed wallet access. Prefers the primary wallet, switches it to
  * Arc testnet, and returns a viem wallet client.
  *
- * Public interface is identical to the previous Privy-backed hook so all
+ * Public interface is identical to the previous wallet hook so all
  * consumers (JoinPool, FundPool, BackGoal, CreatePool, Header, useUsdcDeposit)
- * are untouched. The `wallet` field from the old Privy interface was confirmed
+ * are untouched. The `wallet` field from the old interface was confirmed
  * unused by consumers (grep -rn ".wallet" app/components app/lib returned 0 hits).
  */
 export function useEmbeddedWallet(): EmbeddedWalletState {

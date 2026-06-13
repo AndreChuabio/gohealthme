@@ -4,8 +4,8 @@
  * errors instead of crashing when an integration is not wired up yet.
  */
 
-export const PRIVY_CONFIGURED: boolean =
-  (process.env.NEXT_PUBLIC_PRIVY_APP_ID ?? "") !== "";
+export const DYNAMIC_CONFIGURED: boolean =
+  (process.env.NEXT_PUBLIC_DYNAMIC_ENVIRONMENT_ID ?? "") !== "";
 
 const rawWorldAppId = process.env.NEXT_PUBLIC_WORLD_APP_ID ?? "";
 

@@ -9,7 +9,7 @@ import {
 } from "@worldcoin/idkit";
 import { useQueryClient } from "@tanstack/react-query";
 import { arcTxUrl } from "@/lib/chains";
-import { PRIVY_CONFIGURED, WORLD_ACTION_ID, WORLD_APP_ID } from "@/lib/config";
+import { DYNAMIC_CONFIGURED, WORLD_ACTION_ID, WORLD_APP_ID } from "@/lib/config";
 import { useEmbeddedWallet } from "@/lib/wallet";
 import {
   erc20Abi,
@@ -303,11 +303,11 @@ export default function JoinPool({
   entryFee: bigint;
   alreadyJoined?: boolean;
 }) {
-  if (!PRIVY_CONFIGURED) {
+  if (!DYNAMIC_CONFIGURED) {
     return (
       <ErrorNote
         title="Sign-in is not configured"
-        detail="Set NEXT_PUBLIC_PRIVY_APP_ID to enable joining with an embedded wallet."
+        detail="Set NEXT_PUBLIC_DYNAMIC_ENVIRONMENT_ID to enable joining with an embedded wallet."
       />
     );
   }

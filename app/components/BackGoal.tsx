@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type Address } from "viem";
-import { PRIVY_CONFIGURED } from "@/lib/config";
+import { DYNAMIC_CONFIGURED } from "@/lib/config";
 import {
   fetchParticipants,
   getHealthPoolsAddress,
@@ -198,11 +198,11 @@ function BackGoalInner({ poolId }: { poolId: bigint }) {
 }
 
 export default function BackGoal({ poolId }: { poolId: bigint }) {
-  if (!PRIVY_CONFIGURED) {
+  if (!DYNAMIC_CONFIGURED) {
     return (
       <ErrorNote
         title="Sign-in is not configured"
-        detail="Set NEXT_PUBLIC_PRIVY_APP_ID to enable backing with an embedded wallet."
+        detail="Set NEXT_PUBLIC_DYNAMIC_ENVIRONMENT_ID to enable backing with an embedded wallet."
       />
     );
   }

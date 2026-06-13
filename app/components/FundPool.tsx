@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { PRIVY_CONFIGURED } from "@/lib/config";
+import { DYNAMIC_CONFIGURED } from "@/lib/config";
 import { getHealthPoolsAddress, parseUsdc } from "@/lib/contract";
 import { useEmbeddedWallet } from "@/lib/wallet";
 import { useUsdcDeposit } from "@/lib/useUsdcDeposit";
@@ -137,11 +137,11 @@ function FundPoolInner({ poolId }: { poolId: bigint }) {
 }
 
 export default function FundPool({ poolId }: { poolId: bigint }) {
-  if (!PRIVY_CONFIGURED) {
+  if (!DYNAMIC_CONFIGURED) {
     return (
       <ErrorNote
         title="Sign-in is not configured"
-        detail="Set NEXT_PUBLIC_PRIVY_APP_ID to enable funding with an embedded wallet."
+        detail="Set NEXT_PUBLIC_DYNAMIC_ENVIRONMENT_ID to enable funding with an embedded wallet."
       />
     );
   }
