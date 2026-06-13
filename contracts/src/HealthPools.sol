@@ -372,20 +372,27 @@ contract HealthPools {
 
         address[] storage plist = participantList[poolId];
         for (uint256 i = 0; i < plist.length; i++) {
-            address user = plist[i];
-            if (!_isAchiever(poolId, user)) continue;
-            address[] storage blist = backerList[poolId][user];
-            for (uint256 j = 0; j < blist.length; j++) {
-                address backer = blist[j];
-                uint256 stake = backerStake[poolId][user][backer];
-                if (stake == 0) continue;
-                uint256 payout = stake + (stake * bonusPot) / backingOnAchievers;
-                backerStake[poolId][user][backer] = 0;
-                p.balance -= payout;
-                _push(backer, payout);
-                totalPaid += payout;
-                emit BackerPaid(poolId, backer, user, payout);
-            }
+            if (!_isAchiever(poolId, plist[i])) continue;
+            totalPaid += _payBackersOf(poolId, p, plist[i], bonusPot, backingOnAchievers);
+        }
+    }
+
+    /// @dev Pays all backers of a single achiever.
+    function _payBackersOf(uint256 poolId, Pool storage p, address user, uint256 bonusPot, uint256 backingOnAchievers)
+        internal
+        returns (uint256 totalPaid)
+    {
+        address[] storage blist = backerList[poolId][user];
+        for (uint256 j = 0; j < blist.length; j++) {
+            address backer = blist[j];
+            uint256 stake = backerStake[poolId][user][backer];
+            if (stake == 0) continue;
+            uint256 payout = stake + (stake * bonusPot) / backingOnAchievers;
+            backerStake[poolId][user][backer] = 0;
+            p.balance -= payout;
+            _push(backer, payout);
+            totalPaid += payout;
+            emit BackerPaid(poolId, backer, user, payout);
         }
     }
 
