@@ -2,9 +2,15 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useQuery } from "@tanstack/react-query";
+import { createPublicClient, http, type Address } from "viem";
+import { mainnet } from "viem/chains";
 import { DYNAMIC_CONFIGURED } from "@/lib/config";
-import { shortAddress } from "@/lib/contract";
 import { useEmbeddedWallet } from "@/lib/wallet";
+
+// ENS names + reverse records live on Ethereum mainnet, so resolve there
+// (independent of the app's Arc chain). Read-only display nicety.
+const ensClient = createPublicClient({ chain: mainnet, transport: http() });
 
 const NAV_ITEMS: { href: string; label: string }[] = [
   { href: "/pools", label: "Pools" },
@@ -47,6 +53,22 @@ function NavLinks() {
 function AuthControls() {
   const { ready, authenticated, address, login, logout } = useEmbeddedWallet();
 
+  // Reverse-resolve the connected wallet to its ENS name; fall back to the raw
+  // address when there is no name (or the lookup fails).
+  const { data: ensName } = useQuery({
+    queryKey: ["ensName", address],
+    queryFn: async () => {
+      if (address === null) return null;
+      try {
+        return await ensClient.getEnsName({ address: address as Address });
+      } catch {
+        return null;
+      }
+    },
+    enabled: address !== null,
+    staleTime: 5 * 60 * 1000,
+  });
+
   if (!ready) {
     return (
       <div className="h-9 w-24 animate-pulse rounded-lg bg-surface-raised" />
@@ -68,9 +90,16 @@ function AuthControls() {
   return (
     <div className="flex items-center gap-2">
       {address !== null ? (
-        <span className="hidden rounded-lg border border-edge bg-surface-raised px-3 py-2 font-mono text-xs text-muted sm:inline">
-          {shortAddress(address)}
-        </span>
+        <button
+          type="button"
+          onClick={() => {
+            void navigator.clipboard?.writeText(address);
+          }}
+          title={`Click to copy ${address}`}
+          className="hidden rounded-lg border border-edge bg-surface-raised px-3 py-2 font-mono text-xs text-muted hover:text-foreground sm:inline"
+        >
+          {ensName ?? address}
+        </button>
       ) : null}
       <button
         type="button"
