@@ -2,25 +2,18 @@
 // No DB on purpose: two small JSON maps, read-modify-write per request.
 // TODO post-hackathon: replace with a real store (Redis or Postgres).
 //
-// Serverless filesystems (Vercel/Railway) are read-only except for the OS temp
-// dir, so writing under the app dir throws EROFS. Use os.tmpdir() on serverless
-// (ephemeral + per-instance, fine for this demo's short-lived state), the app
-// dir locally, or an explicit DATA_DIR override.
+// ALWAYS write under the OS temp dir. Serverless filesystems (Vercel/Railway)
+// are read-only except for os.tmpdir(), so writing under the app dir throws
+// EROFS. os.tmpdir() is writable everywhere (local + serverless); the data is
+// short-lived demo state, so ephemeral/per-instance is fine. No env detection
+// (it proved unreliable) — unconditional, with an optional DATA_DIR override.
 
 import { promises as fs } from "fs";
 import os from "os";
 import path from "path";
 
-const IS_SERVERLESS =
-  process.env.VERCEL !== undefined ||
-  process.env.RAILWAY_ENVIRONMENT !== undefined ||
-  process.env.AWS_LAMBDA_FUNCTION_NAME !== undefined;
-
 const DATA_DIR =
-  process.env.DATA_DIR ??
-  (IS_SERVERLESS
-    ? path.join(os.tmpdir(), "gohealthme-data")
-    : path.join(process.cwd(), ".data"));
+  process.env.DATA_DIR ?? path.join(os.tmpdir(), "gohealthme-data");
 
 async function ensureDataDir(): Promise<void> {
   await fs.mkdir(DATA_DIR, { recursive: true });

@@ -152,16 +152,23 @@ export async function recordVerification(
   poolId: string,
   nullifierHash: string,
 ): Promise<void> {
-  const map = await readJson<VerificationMap>(VERIFICATIONS_FILE, {});
-  const key = address.toLowerCase();
-  const byPool = map[key] ?? {};
-  byPool[poolId] = {
-    nullifierHash,
-    poolId,
-    verifiedAt: new Date().toISOString(),
-  };
-  map[key] = byPool;
-  await writeJson(VERIFICATIONS_FILE, map);
+  // Non-fatal: this record only feeds the (demo-only) Unlink payout gate. The
+  // join itself depends solely on the verified nullifier returned to the
+  // client, NOT on this write. So a storage failure must never block joining.
+  try {
+    const map = await readJson<VerificationMap>(VERIFICATIONS_FILE, {});
+    const key = address.toLowerCase();
+    const byPool = map[key] ?? {};
+    byPool[poolId] = {
+      nullifierHash,
+      poolId,
+      verifiedAt: new Date().toISOString(),
+    };
+    map[key] = byPool;
+    await writeJson(VERIFICATIONS_FILE, map);
+  } catch (err) {
+    console.error("recordVerification failed (non-fatal, join proceeds):", err);
+  }
 }
 
 export async function getVerification(
