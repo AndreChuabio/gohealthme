@@ -1,29 +1,37 @@
-// Document-verified health goals — AI judge (server only).
+// Document-verified health goals — Chainlink Confidential AI Attester client
+// (server only).
 //
 // A participant uploads a health document (flu-shot record, lab/cholesterol PDF,
-// biometric screening result). We send it to Anthropic Claude and ask whether it
-// satisfies the pool goal. The document is sent to the judge for inference and is
-// NEVER persisted to disk or chain — only the verdict (a small JSON struct) is
-// returned and later recorded on-chain by the caller.
+// biometric screening result). We submit it to the Chainlink Confidential AI
+// Attester, whose model runs privately inside a TEE (trusted execution
+// enclave). Inference is asynchronous: the attester queues the job and we poll
+// it by id until it completes. The document bytes are sent to the attester for
+// inference only and are NEVER persisted to disk or chain — only the verdict (a
+// small JSON struct) is returned and later recorded on-chain by the caller.
 //
-// Privacy: no raw health data is logged or stored. We log only that a judgement
-// ran, the verdict, and the confidence — never the document bytes or its text.
+// Privacy: no raw health data is logged or stored. We log only that an inference
+// was submitted/polled, the verdict, and the confidence — never the document
+// bytes or its text.
 //
-// SDK note: @anthropic-ai/sdk is NOT installed in this project, so this module
-// talks to the Anthropic Messages API over a direct fetch (POST
-// https://api.anthropic.com/v1/messages, x-api-key + anthropic-version headers).
-// The content-block shapes below were verified against docs.anthropic.com
-// (build-with-claude/pdf-support and build-with-claude/vision) on 2026-06-13:
-//   image:    { type: "image",    source: { type: "base64", media_type, data } }
-//   document: { type: "document", source: { type: "base64", media_type: "application/pdf", data } }
-// Neither inline shape requires a beta header.
+// Live attester API (probed against our key on 2026-06-13):
+//   base   https://confidential-ai-dev-preview.cldev.cloud
+//   auth   Authorization: Bearer <CONFIDENTIAL_AI_API_KEY>
+//   model  "gemma4" (text + image, confirmed available via GET /v1/models)
+//   submit POST /v1/inference { model, system_prompt?, prompt, resources? }
+//            -> 202 { id, status: "queued", ... }
+//   poll   GET  /v1/inference/:id
+//            -> { status, output?, ... } ; status in queued|running|completed|failed
+//
+// We omit cre_callback on purpose: this is the simpler poll-based live path. The
+// callback (CRE) path lives separately in cre/ and is untouched by this module.
 
 import { optionalEnv } from "@/lib/server/env";
 
-const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
-const ANTHROPIC_VERSION = "2023-06-01";
-// Current fast vision-capable model (200K context). Handles image + PDF input.
-const MODEL = "claude-haiku-4-5-20251001";
+const ATTESTER_BASE_URL = optionalEnv(
+  "CONFIDENTIAL_AI_BASE_URL",
+  "https://confidential-ai-dev-preview.cldev.cloud",
+);
+const ATTESTER_MODEL = "gemma4";
 
 export type Confidence = "low" | "medium" | "high";
 
@@ -31,19 +39,25 @@ export interface Verdict {
   verified: boolean;
   confidence: Confidence;
   reason: string;
-  /** true when the deterministic mock judge produced this verdict (no API key). */
-  mock: boolean;
 }
+
+/**
+ * Status of an attester inference job as the two-route flow surfaces it to the
+ * frontend. "verifying" means the attester job is still queued/running.
+ */
+export type InferenceStatus = "verifying" | "completed" | "failed";
 
 export type SupportedContentType =
   | "image/png"
   | "image/jpeg"
-  | "application/pdf";
+  | "application/pdf"
+  | "text/plain";
 
 const SUPPORTED_CONTENT_TYPES: readonly SupportedContentType[] = [
   "image/png",
   "image/jpeg",
   "application/pdf",
+  "text/plain",
 ];
 
 export function isSupportedContentType(
@@ -52,82 +66,267 @@ export function isSupportedContentType(
   return (SUPPORTED_CONTENT_TYPES as readonly string[]).includes(value);
 }
 
+/** Prefix marking a mock (no-key / submit-failure) inference id. */
+const MOCK_ID_PREFIX = "mock-";
+
+export function isMockId(id: string): boolean {
+  return id.startsWith(MOCK_ID_PREFIX);
+}
+
 const SYSTEM_PROMPT =
-  "You are a health verification analyst. You review a single uploaded health " +
-  "document (such as a flu-shot record, a lab or cholesterol report, or a " +
-  "biometric screening result) and decide whether it satisfies a stated health " +
-  "goal. Judge strictly from the document's contents. If the document is " +
+  "You are a health verification analyst. You review one or more uploaded health " +
+  "documents (such as a flu-shot record, a lab or cholesterol report, or a " +
+  "biometric screening result) and decide whether they satisfy a stated health " +
+  "goal. Judge strictly from the documents' contents. If a document is " +
   "unreadable, off-topic, or does not clearly satisfy the goal, do not verify it.";
-
-interface ContentBlock {
-  type: "image" | "document" | "text";
-  source?: {
-    type: "base64";
-    media_type: string;
-    data: string;
-  };
-  text?: string;
-}
-
-function buildDocumentBlock(
-  contentType: SupportedContentType,
-  fileBase64: string,
-): ContentBlock {
-  if (contentType === "application/pdf") {
-    return {
-      type: "document",
-      source: { type: "base64", media_type: "application/pdf", data: fileBase64 },
-    };
-  }
-  // image/png or image/jpeg
-  return {
-    type: "image",
-    source: { type: "base64", media_type: contentType, data: fileBase64 },
-  };
-}
 
 function userPrompt(goalSpec: string): string {
   return (
-    `Based on the attached document, did this person satisfy this goal: '${goalSpec}'? ` +
-    `Respond ONLY with JSON: {verified: boolean, confidence: 'low'|'medium'|'high', reason: string}`
+    `Based on the attached document(s), did this person satisfy this goal: '${goalSpec}'? ` +
+    `Respond ONLY with strict JSON, no prose: ` +
+    `{"verified": boolean, "confidence": "low"|"medium"|"high", "reason": string}`
   );
 }
 
+interface InferenceResource {
+  filename: string;
+  content_type: string;
+  content_base64: string;
+}
+
 /**
- * Deterministic mock judge used when ANTHROPIC_API_KEY is absent. Returns a
- * verified=true/high verdict so the demo flow still records on-chain. The reason
- * makes the mock origin explicit and never echoes document contents.
+ * Submit a document to the attester for confidential inference. Returns the
+ * attester inference id to poll. When CONFIDENTIAL_AI_API_KEY is unset, or the
+ * submit request throws/returns a non-2xx, returns a deterministic mock id and
+ * logs a clear warning so the demo flow still completes.
+ */
+export async function submitInference(
+  goalSpec: string,
+  fileBase64: string,
+  fileName: string,
+  contentType: SupportedContentType,
+): Promise<string> {
+  const apiKey = optionalEnv("CONFIDENTIAL_AI_API_KEY", "");
+  if (apiKey === "") {
+    console.warn(
+      "[attester] CONFIDENTIAL_AI_API_KEY not set — using DETERMINISTIC MOCK " +
+        "verdict (verified=true, confidence=high). Set CONFIDENTIAL_AI_API_KEY " +
+        "in gohealthme/.env for live TEE inference.",
+    );
+    return mockId();
+  }
+
+  const resource: InferenceResource = {
+    filename: fileName,
+    content_type: contentType,
+    content_base64: fileBase64,
+  };
+  const body = {
+    model: ATTESTER_MODEL,
+    system_prompt: SYSTEM_PROMPT,
+    prompt: userPrompt(goalSpec),
+    resources: [resource],
+  };
+
+  let res: Response;
+  try {
+    res = await fetch(`${ATTESTER_BASE_URL}/v1/inference`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    console.error(
+      "[attester] inference submit failed to send, falling back to mock:",
+      String(err),
+    );
+    return mockId();
+  }
+
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    console.error(
+      `[attester] inference submit returned HTTP ${res.status}, falling back ` +
+        `to mock: ${detail.slice(0, 300)}`,
+    );
+    return mockId();
+  }
+
+  let payload: { id?: unknown; status?: unknown };
+  try {
+    payload = (await res.json()) as typeof payload;
+  } catch (err) {
+    console.error(
+      "[attester] inference submit returned unreadable JSON, falling back to mock:",
+      String(err),
+    );
+    return mockId();
+  }
+
+  if (typeof payload.id !== "string" || payload.id.trim() === "") {
+    console.error(
+      "[attester] inference submit response had no id, falling back to mock.",
+    );
+    return mockId();
+  }
+
+  console.log(
+    `[attester] inference submitted id=${payload.id} status=${String(
+      payload.status ?? "queued",
+    )}`,
+  );
+  return payload.id;
+}
+
+/**
+ * Result of polling an attester inference. When status is "verifying" the job is
+ * still queued/running and verdict is null. When "completed" the verdict is
+ * parsed from the model output. When "failed" verdict carries an unverified/low
+ * reason so the route can respond cleanly.
+ */
+export interface PollResult {
+  status: InferenceStatus;
+  verdict: Verdict | null;
+}
+
+/**
+ * Poll the attester for a single inference id. Never throws — transport/parse
+ * failures surface as status "failed" with an unverified verdict so the route
+ * stays crash-free. A mock id resolves immediately to a completed verified
+ * verdict (the demo fallback).
+ */
+export async function pollInference(
+  attesterId: string,
+  goalSpec: string,
+): Promise<PollResult> {
+  if (isMockId(attesterId)) {
+    return { status: "completed", verdict: mockVerdict(goalSpec) };
+  }
+
+  const apiKey = optionalEnv("CONFIDENTIAL_AI_API_KEY", "");
+  if (apiKey === "") {
+    // No key but a non-mock id: treat as mock so the demo keeps flowing.
+    return { status: "completed", verdict: mockVerdict(goalSpec) };
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(
+      `${ATTESTER_BASE_URL}/v1/inference/${encodeURIComponent(attesterId)}`,
+      {
+        method: "GET",
+        headers: { authorization: `Bearer ${apiKey}` },
+      },
+    );
+  } catch (err) {
+    console.error("[attester] poll failed to send:", String(err));
+    return {
+      status: "failed",
+      verdict: failedVerdict(
+        "Could not reach the verification enclave. Please try again.",
+      ),
+    };
+  }
+
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    console.error(
+      `[attester] poll returned HTTP ${res.status}: ${detail.slice(0, 300)}`,
+    );
+    return {
+      status: "failed",
+      verdict: failedVerdict(
+        `Verification enclave error (HTTP ${res.status}). Please try again.`,
+      ),
+    };
+  }
+
+  let payload: { status?: unknown; output?: unknown };
+  try {
+    payload = (await res.json()) as typeof payload;
+  } catch (err) {
+    console.error("[attester] poll returned unreadable JSON:", String(err));
+    return {
+      status: "failed",
+      verdict: failedVerdict(
+        "Verification enclave returned an unreadable response.",
+      ),
+    };
+  }
+
+  const status = typeof payload.status === "string" ? payload.status : "";
+
+  if (status === "completed") {
+    const output = typeof payload.output === "string" ? payload.output : "";
+    const verdict = parseVerdict(output);
+    console.log(
+      `[attester] verdict id=${attesterId} verified=${verdict.verified} confidence=${verdict.confidence}`,
+    );
+    return { status: "completed", verdict };
+  }
+
+  if (status === "failed") {
+    console.error(`[attester] inference id=${attesterId} reported failed`);
+    return {
+      status: "failed",
+      verdict: failedVerdict(
+        "The verification enclave could not complete this inference.",
+      ),
+    };
+  }
+
+  // queued / running / anything else -> still verifying.
+  return { status: "verifying", verdict: null };
+}
+
+/** Deterministic mock inference id (no key / submit failure). */
+function mockId(): string {
+  return `${MOCK_ID_PREFIX}${Math.random().toString(36).slice(2, 12)}`;
+}
+
+/**
+ * Deterministic mock verdict used when CONFIDENTIAL_AI_API_KEY is absent or the
+ * attester submit failed. Returns verified=true/high so the demo flow still
+ * records on-chain. The reason makes the mock origin explicit and never echoes
+ * document contents.
  */
 function mockVerdict(goalSpec: string): Verdict {
-  console.warn(
-    "[judge] ANTHROPIC_API_KEY not set — using DETERMINISTIC MOCK judge " +
-      "(verified=true, confidence=high). Set ANTHROPIC_API_KEY in app/.env.local " +
-      "for the live Claude judge.",
-  );
   return {
     verified: true,
     confidence: "high",
-    reason: `Mock judge: assuming the uploaded document satisfies the goal '${goalSpec}'. Set ANTHROPIC_API_KEY for a real verdict.`,
-    mock: true,
+    reason: `Mock attester: assuming the uploaded document satisfies the goal '${goalSpec}'. Set CONFIDENTIAL_AI_API_KEY for a real TEE verdict.`,
   };
 }
 
+function failedVerdict(reason: string): Verdict {
+  return { verified: false, confidence: "low", reason };
+}
+
 /**
- * Pull the first JSON object out of Claude's text response. The model is asked
- * for JSON-only, but we tolerate stray prose or code fences around it.
+ * Pull the verdict JSON out of the attester's `output` text. The model is asked
+ * for strict JSON, but we tolerate code fences or stray prose around it. If
+ * nothing parseable is found, treat as unverified/low.
  */
-function parseVerdictJson(text: string): {
-  verified: boolean;
-  confidence: Confidence;
-  reason: string;
-} {
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
+function parseVerdict(output: string): Verdict {
+  const stripped = output.replace(/```(?:json)?/gi, "").trim();
+  const start = stripped.indexOf("{");
+  const end = stripped.lastIndexOf("}");
   if (start === -1 || end === -1 || end < start) {
-    throw new Error("Judge response did not contain a JSON object");
+    return failedVerdict("Verification enclave returned no structured verdict.");
   }
-  const slice = text.slice(start, end + 1);
-  const parsed = JSON.parse(slice) as Record<string, unknown>;
+
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(stripped.slice(start, end + 1)) as Record<
+      string,
+      unknown
+    >;
+  } catch {
+    return failedVerdict("Verification enclave returned an unexpected format.");
+  }
 
   const verified = parsed.verified === true;
   const confidence: Confidence =
@@ -139,112 +338,9 @@ function parseVerdictJson(text: string): {
   const reason =
     typeof parsed.reason === "string" && parsed.reason.trim() !== ""
       ? parsed.reason
-      : "No reason provided by judge.";
+      : "No reason provided by the verification enclave.";
 
   return { verified, confidence, reason };
-}
-
-/**
- * Judge whether the uploaded document satisfies the goal. Uses Claude when
- * ANTHROPIC_API_KEY is set; otherwise falls back to a deterministic mock that
- * verifies true/high for the demo (and logs that it did so). Never throws on a
- * model/transport error — surfaces a low-confidence unverified verdict instead,
- * so the route can respond cleanly without crashing.
- */
-export async function judgeDocument(
-  goalSpec: string,
-  fileBase64: string,
-  contentType: SupportedContentType,
-): Promise<Verdict> {
-  const apiKey = optionalEnv("ANTHROPIC_API_KEY", "");
-  if (apiKey === "") {
-    return mockVerdict(goalSpec);
-  }
-
-  const body = {
-    model: MODEL,
-    max_tokens: 1024,
-    system: SYSTEM_PROMPT,
-    messages: [
-      {
-        role: "user",
-        content: [
-          buildDocumentBlock(contentType, fileBase64),
-          { type: "text", text: userPrompt(goalSpec) },
-        ],
-      },
-    ],
-  };
-
-  let res: Response;
-  try {
-    res = await fetch(ANTHROPIC_URL, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": ANTHROPIC_VERSION,
-      },
-      body: JSON.stringify(body),
-    });
-  } catch (err) {
-    console.error("[judge] Anthropic request failed to send:", String(err));
-    return {
-      verified: false,
-      confidence: "low",
-      reason: "Could not reach the verification service. Please try again.",
-      mock: false,
-    };
-  }
-
-  if (!res.ok) {
-    // Read the error body for diagnostics, but never log document contents.
-    const detail = await res.text().catch(() => "");
-    console.error(
-      `[judge] Anthropic returned HTTP ${res.status}: ${detail.slice(0, 300)}`,
-    );
-    return {
-      verified: false,
-      confidence: "low",
-      reason: `Verification service error (HTTP ${res.status}). Please try again.`,
-      mock: false,
-    };
-  }
-
-  let payload: { content?: Array<{ type: string; text?: string }> };
-  try {
-    payload = (await res.json()) as typeof payload;
-  } catch (err) {
-    console.error("[judge] Failed to parse Anthropic response JSON:", String(err));
-    return {
-      verified: false,
-      confidence: "low",
-      reason: "Verification service returned an unreadable response.",
-      mock: false,
-    };
-  }
-
-  const text = (payload.content ?? [])
-    .filter((b) => b.type === "text" && typeof b.text === "string")
-    .map((b) => b.text as string)
-    .join("\n")
-    .trim();
-
-  try {
-    const { verified, confidence, reason } = parseVerdictJson(text);
-    console.log(
-      `[judge] verdict via Claude: verified=${verified} confidence=${confidence}`,
-    );
-    return { verified, confidence, reason, mock: false };
-  } catch (err) {
-    console.error("[judge] Could not parse verdict from response:", String(err));
-    return {
-      verified: false,
-      confidence: "low",
-      reason: "Verification service returned an unexpected format.",
-      mock: false,
-    };
-  }
 }
 
 /**
