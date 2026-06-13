@@ -7,15 +7,20 @@ import Countdown from "@/components/Countdown";
 import JoinPool from "@/components/JoinPool";
 import BackGoal from "@/components/BackGoal";
 import FundPool from "@/components/FundPool";
+import EvidenceUpload from "@/components/EvidenceUpload";
 import { Badge, ErrorNote, Skeleton, Stat } from "@/components/ui";
 import { arcAddressUrl } from "@/lib/chains";
 import {
   BOUNTY_MODEL_LABELS,
+  displayGoalSpec,
+  evidenceTypeOf,
+  fetchParticipant,
   fetchParticipants,
   fetchPool,
   formatUsdc,
   shortAddress,
 } from "@/lib/contract";
+import { useEmbeddedWallet } from "@/lib/wallet";
 
 function formatDay(seconds: bigint): string {
   return new Date(Number(seconds) * 1000).toLocaleDateString("en-US", {
@@ -25,6 +30,7 @@ function formatDay(seconds: bigint): string {
 }
 
 export default function PoolDetail({ id }: { id: string }) {
+  const { address } = useEmbeddedWallet();
   const poolId = useMemo(() => {
     try {
       const parsed = BigInt(id);
@@ -50,6 +56,16 @@ export default function PoolDetail({ id }: { id: string }) {
       return fetchParticipants(poolId);
     },
     enabled: poolId !== null,
+  });
+
+  const participantQuery = useQuery({
+    queryKey: ["participant", id, address],
+    queryFn: () => {
+      if (poolId === null) throw new Error("Invalid pool id.");
+      if (address === null) throw new Error("No wallet connected.");
+      return fetchParticipant(poolId, address);
+    },
+    enabled: poolId !== null && address !== null,
   });
 
   if (poolId === null) {
@@ -94,6 +110,10 @@ export default function PoolDetail({ id }: { id: string }) {
 
   const pool = poolQuery.data;
   const participantCount = participantsQuery.data?.length ?? null;
+  const evidenceType = evidenceTypeOf(pool.goalSpec);
+  const isDocGoal = evidenceType === "document";
+  const goalTitle = displayGoalSpec(pool.goalSpec);
+  const hasJoined = participantQuery.data?.joined === true;
 
   return (
     <div className="space-y-8">
@@ -106,14 +126,22 @@ export default function PoolDetail({ id }: { id: string }) {
         </Link>
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <Badge>{pool.initiative}</Badge>
+          <Badge tone={isDocGoal ? "accent" : "muted"}>
+            {isDocGoal ? "Document" : "Wearable"}
+          </Badge>
           {pool.settled ? (
             <Badge tone="muted">Settled</Badge>
           ) : (
             <Badge tone="warning">Live</Badge>
           )}
         </div>
+        {isDocGoal ? (
+          <p className="mt-3 text-sm font-semibold uppercase tracking-wide text-accent">
+            Preventive care - Earn from a {formatUsdc(pool.balance)} USDC bounty
+          </p>
+        ) : null}
         <h1 className="mt-3 text-2xl font-bold leading-tight sm:text-3xl">
-          {pool.goalSpec}
+          {goalTitle}
         </h1>
         <p className="mt-2 text-sm text-muted">
           Funder{" "}
@@ -165,9 +193,9 @@ export default function PoolDetail({ id }: { id: string }) {
           <section className="rounded-2xl border border-edge bg-surface p-5">
             <h2 className="text-lg font-semibold">Join this pool</h2>
             <p className="mb-4 mt-1 text-sm text-muted">
-              Pay the {formatUsdc(pool.entryFee)} USDC entry fee, hit the goal
-              during the period, and the bounty pays out the moment your result
-              is verified.
+              {isDocGoal
+                ? `Pay the ${formatUsdc(pool.entryFee)} USDC entry fee, then upload your record. The bounty pays out the moment your document is verified.`
+                : `Pay the ${formatUsdc(pool.entryFee)} USDC entry fee, hit the goal during the period, and the bounty pays out the moment your result is verified.`}
             </p>
             {participantCount === 0 ? (
               <p className="mb-4 rounded-xl border border-dashed border-accent/30 bg-accent-deep/20 p-3 text-sm text-accent">
@@ -176,6 +204,13 @@ export default function PoolDetail({ id }: { id: string }) {
             ) : null}
             <JoinPool poolId={pool.id} />
           </section>
+
+          {isDocGoal && hasJoined ? (
+            <section className="rounded-2xl border border-accent/40 bg-surface p-5">
+              <EvidenceUpload poolId={pool.id} goalSpec={pool.goalSpec} />
+            </section>
+          ) : null}
+
           <section className="rounded-2xl border border-edge bg-surface p-5">
             <BackGoal poolId={pool.id} />
           </section>
