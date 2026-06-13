@@ -66,7 +66,7 @@ function CreatePoolInner() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const { ready, authenticated, login } = useEmbeddedWallet();
-  const { status, busy, runUsdcDeposit } = useUsdcDeposit();
+  const { status, busy, reset, runUsdcDeposit } = useUsdcDeposit();
 
   const [initiative, setInitiative] = useState<string>("");
   const [goalSpec, setGoalSpec] = useState<string>("");
@@ -339,7 +339,11 @@ function CreatePoolInner() {
         ) : null}
 
         {status.kind === "error" ? (
-          <ErrorNote title="Could not create the pool" detail={status.message} />
+          <ErrorNote
+            title="Could not create the pool"
+            detail={status.message}
+            onRetry={reset}
+          />
         ) : null}
       </div>
     </div>

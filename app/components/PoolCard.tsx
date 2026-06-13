@@ -21,9 +21,9 @@ export default function PoolCard({ pool }: { pool: PoolInfo }) {
       <h3 className="mt-3 text-xl font-semibold leading-snug">
         {pool.goalSpec}
       </h3>
-      <p className="mt-1 text-sm text-muted">
-        Sponsored by {shortAddress(pool.creator)} ·{" "}
-        {BOUNTY_MODEL_LABELS[pool.bountyModel] ?? "Unknown model"}
+      <p className="mt-1 text-xs text-muted">
+        Funder {shortAddress(pool.creator)} ·{" "}
+        {BOUNTY_MODEL_LABELS[pool.bountyModel] ?? "Custom model"}
       </p>
       <div className="mt-4 grid grid-cols-2 gap-3">
         <div className="rounded-xl bg-surface-raised p-3">

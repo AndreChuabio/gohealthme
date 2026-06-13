@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import PoolCard from "@/components/PoolCard";
-import { EmptyState, ErrorNote, PoolCardSkeleton } from "@/components/ui";
+import { Badge, EmptyState, ErrorNote, PoolCardSkeleton } from "@/components/ui";
 import { fetchPools } from "@/lib/contract";
 
 export default function PoolsPage() {
@@ -16,12 +16,16 @@ export default function PoolsPage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">
-            Bounty pools
-          </h1>
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">
+              Bounty pools
+            </h1>
+            <Badge tone="warning">Arc Testnet</Badge>
+          </div>
           <p className="mt-1 text-sm text-muted">
             Live sponsor-funded pools on Arc testnet. Join with World ID, hit
-            the goal, get paid in USDC.
+            the goal, get paid in USDC. USDC here is testnet only and has no
+            real value.
           </p>
         </div>
         <Link

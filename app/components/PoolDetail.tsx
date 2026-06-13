@@ -2,6 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
+import Link from "next/link";
 import Countdown from "@/components/Countdown";
 import JoinPool from "@/components/JoinPool";
 import BackGoal from "@/components/BackGoal";
@@ -16,12 +17,10 @@ import {
   shortAddress,
 } from "@/lib/contract";
 
-function formatDate(seconds: bigint): string {
+function formatDay(seconds: bigint): string {
   return new Date(Number(seconds) * 1000).toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
   });
 }
 
@@ -99,7 +98,13 @@ export default function PoolDetail({ id }: { id: string }) {
   return (
     <div className="space-y-8">
       <div>
-        <div className="flex flex-wrap items-center gap-2">
+        <Link
+          href="/pools"
+          className="text-sm text-muted hover:text-foreground"
+        >
+          Back to pools
+        </Link>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
           <Badge>{pool.initiative}</Badge>
           {pool.settled ? (
             <Badge tone="muted">Settled</Badge>
@@ -111,7 +116,7 @@ export default function PoolDetail({ id }: { id: string }) {
           {pool.goalSpec}
         </h1>
         <p className="mt-2 text-sm text-muted">
-          Sponsored by{" "}
+          Funder{" "}
           <a
             href={arcAddressUrl(pool.creator)}
             target="_blank"
@@ -142,28 +147,39 @@ export default function PoolDetail({ id }: { id: string }) {
         />
         <Stat
           label="Payout model"
-          value={BOUNTY_MODEL_LABELS[pool.bountyModel] ?? "Unknown"}
+          value={BOUNTY_MODEL_LABELS[pool.bountyModel] ?? "Custom model"}
         />
         <Stat
           label="Participants"
           value={participantCount !== null ? participantCount : "--"}
         />
-        <Stat
-          label="Period"
-          value={`${formatDate(pool.periodStart)} to ${formatDate(pool.periodEnd)}`}
-        />
+        <Stat label="Starts" value={formatDay(pool.periodStart)} />
+        <Stat label="Ends" value={formatDay(pool.periodEnd)} />
       </div>
 
       {!pool.settled ? (
-        <section className="rounded-2xl border border-edge bg-surface p-5">
-          <h2 className="text-lg font-semibold">Join this pool</h2>
-          <p className="mb-4 mt-1 text-sm text-muted">
-            Pay the {formatUsdc(pool.entryFee)} USDC entry fee, hit the goal
-            during the period, and the bounty pays out the moment your result
-            is verified.
+        <div className="space-y-4">
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted">
+            Participant actions
           </p>
-          <JoinPool poolId={pool.id} />
-        </section>
+          <section className="rounded-2xl border border-edge bg-surface p-5">
+            <h2 className="text-lg font-semibold">Join this pool</h2>
+            <p className="mb-4 mt-1 text-sm text-muted">
+              Pay the {formatUsdc(pool.entryFee)} USDC entry fee, hit the goal
+              during the period, and the bounty pays out the moment your result
+              is verified.
+            </p>
+            {participantCount === 0 ? (
+              <p className="mb-4 rounded-xl border border-dashed border-accent/30 bg-accent-deep/20 p-3 text-sm text-accent">
+                No one has joined yet, be the first.
+              </p>
+            ) : null}
+            <JoinPool poolId={pool.id} />
+          </section>
+          <section className="rounded-2xl border border-edge bg-surface p-5">
+            <BackGoal poolId={pool.id} />
+          </section>
+        </div>
       ) : (
         <section className="rounded-2xl border border-edge bg-surface p-5">
           <h2 className="text-lg font-semibold">This pool has settled</h2>
@@ -174,15 +190,14 @@ export default function PoolDetail({ id }: { id: string }) {
         </section>
       )}
 
-      {!pool.settled ? (
+      <div className="space-y-4">
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted">
+          Sponsor action
+        </p>
         <section className="rounded-2xl border border-edge bg-surface p-5">
-          <BackGoal poolId={pool.id} />
+          <FundPool poolId={pool.id} />
         </section>
-      ) : null}
-
-      <section className="rounded-2xl border border-edge bg-surface p-5">
-        <FundPool poolId={pool.id} />
-      </section>
+      </div>
     </div>
   );
 }

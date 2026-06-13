@@ -1,9 +1,48 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { PRIVY_CONFIGURED } from "@/lib/config";
 import { shortAddress } from "@/lib/contract";
 import { useEmbeddedWallet } from "@/lib/wallet";
+
+const NAV_ITEMS: { href: string; label: string }[] = [
+  { href: "/pools", label: "Pools" },
+  { href: "/dashboard", label: "Dashboard" },
+  { href: "/pools/create", label: "Create pool" },
+];
+
+function isActive(pathname: string, href: string): boolean {
+  if (href === "/pools") {
+    return pathname === "/pools" || /^\/pools\/(?!create).+/.test(pathname);
+  }
+  return pathname === href || pathname.startsWith(`${href}/`);
+}
+
+function NavLinks() {
+  const pathname = usePathname();
+  return (
+    <>
+      {NAV_ITEMS.map((item) => {
+        const active = isActive(pathname, item.href);
+        return (
+          <Link
+            key={item.href}
+            href={item.href}
+            aria-current={active ? "page" : undefined}
+            className={`rounded-lg px-3 py-2 ${
+              active
+                ? "bg-surface-raised text-foreground"
+                : "text-muted hover:bg-surface-raised hover:text-foreground"
+            }`}
+          >
+            {item.label}
+          </Link>
+        );
+      })}
+    </>
+  );
+}
 
 function AuthControls() {
   const { ready, authenticated, address, login, logout } = useEmbeddedWallet();
@@ -54,24 +93,7 @@ export default function Header() {
           Go<span className="text-accent">Health</span>Me
         </Link>
         <nav className="flex items-center gap-1 text-sm font-medium sm:gap-2">
-          <Link
-            href="/pools"
-            className="rounded-lg px-3 py-2 text-muted hover:bg-surface-raised hover:text-foreground"
-          >
-            Pools
-          </Link>
-          <Link
-            href="/dashboard"
-            className="rounded-lg px-3 py-2 text-muted hover:bg-surface-raised hover:text-foreground"
-          >
-            Dashboard
-          </Link>
-          <Link
-            href="/pools/create"
-            className="rounded-lg px-3 py-2 text-muted hover:bg-surface-raised hover:text-foreground"
-          >
-            Create pool
-          </Link>
+          <NavLinks />
           {PRIVY_CONFIGURED ? (
             <AuthControls />
           ) : (

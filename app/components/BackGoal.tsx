@@ -82,9 +82,13 @@ function BackGoalInner({ poolId }: { poolId: bigint }) {
     <div className="space-y-3">
       <h3 className="text-lg font-semibold">Back this goal</h3>
       <p className="text-sm text-muted">
+        Back a participant&apos;s goal with USDC. This is separate from joining;
+        you are betting on their success.
+      </p>
+      <p className="text-sm text-muted">
         Stake USDC behind a participant. If they hit the goal you get your
-        stake back plus a 20 percent bonus from the pool; if they miss, your
-        stake rolls into the bounty.
+        stake back plus a bonus from the pool; if they miss, your stake rolls
+        into the bounty.
       </p>
 
       {participantsQuery.isLoading ? (

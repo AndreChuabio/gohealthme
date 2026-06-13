@@ -15,6 +15,7 @@ All entries below were produced during the event (after Fri Jun 12, 9:00pm EDT) 
 | app/components/CreatePool.tsx, app/app/pools/create/page.tsx | AI-generated pool creation flow, human-reviewed |
 | app/components/FundPool.tsx | AI-generated pool top-up component, human-reviewed |
 | app/components/BackGoal.tsx | AI-assisted refactor onto shared deposit hook, human-reviewed |
+| app/ UI/UX polish pass (Header.tsx, PoolDetail.tsx, PoolCard.tsx, BackGoal.tsx, CreatePool.tsx, app/pools/page.tsx, app/globals.css) | AI-assisted copy, layout, active-nav, and empty/error-state pass for demo readiness (no logic changes), human-reviewed |
 | cre/wf-goal-verification/main.ts | AI-generated Chainlink CRE workflow, callback architecture (HTTP-trigger Attester callback → verdict parse → onReport via KeystoneForwarder), reimplemented for health goals from the official MIT-licensed Chainlink reference (see below), human-reviewed |
 | cre/wf-goal-verification/workflow.yaml, cre/project.yaml, cre/wf-goal-verification/config.json | AI-generated CRE project manifests matching the official confidential-ai-attester / minimal-cre-examples schema, human-reviewed |
 | cre/scripts/call-attester.mjs | AI-generated app-side helper that POSTs a synthetic health doc to the Confidential AI Attester with a cre_callback URL, adapted from the demo's curl block, human-reviewed |
