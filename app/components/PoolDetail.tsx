@@ -5,6 +5,7 @@ import { useMemo } from "react";
 import Countdown from "@/components/Countdown";
 import JoinPool from "@/components/JoinPool";
 import BackGoal from "@/components/BackGoal";
+import FundPool from "@/components/FundPool";
 import { Badge, ErrorNote, Skeleton, Stat } from "@/components/ui";
 import { arcAddressUrl } from "@/lib/chains";
 import {
@@ -178,6 +179,10 @@ export default function PoolDetail({ id }: { id: string }) {
           <BackGoal poolId={pool.id} />
         </section>
       ) : null}
+
+      <section className="rounded-2xl border border-edge bg-surface p-5">
+        <FundPool poolId={pool.id} />
+      </section>
     </div>
   );
 }

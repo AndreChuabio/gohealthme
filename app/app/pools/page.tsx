@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import PoolCard from "@/components/PoolCard";
 import { EmptyState, ErrorNote, PoolCardSkeleton } from "@/components/ui";
@@ -13,14 +14,22 @@ export default function PoolsPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">
-          Bounty pools
-        </h1>
-        <p className="mt-1 text-sm text-muted">
-          Live sponsor-funded pools on Arc testnet. Join with World ID, hit
-          the goal, get paid in USDC.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">
+            Bounty pools
+          </h1>
+          <p className="mt-1 text-sm text-muted">
+            Live sponsor-funded pools on Arc testnet. Join with World ID, hit
+            the goal, get paid in USDC.
+          </p>
+        </div>
+        <Link
+          href="/pools/create"
+          className="rounded-xl bg-accent-strong px-4 py-2.5 text-sm font-semibold text-background hover:bg-accent"
+        >
+          Create pool
+        </Link>
       </div>
 
       {poolsQuery.isLoading ? (
@@ -44,7 +53,15 @@ export default function PoolsPage() {
       ) : (poolsQuery.data ?? []).length === 0 ? (
         <EmptyState
           title="No pools yet"
-          detail="Pools appear here the moment a sponsor creates one on Arc. Check back shortly."
+          detail="Pools appear here the moment a sponsor creates one on Arc. Be the first to fund a bounty."
+          action={
+            <Link
+              href="/pools/create"
+              className="inline-block rounded-xl bg-accent-strong px-5 py-3 text-sm font-semibold text-background hover:bg-accent"
+            >
+              Create the first pool
+            </Link>
+          }
         />
       ) : (
         <div className="grid gap-4 sm:grid-cols-2">

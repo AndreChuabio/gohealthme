@@ -3,35 +3,24 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type Address } from "viem";
-import { arcTxUrl } from "@/lib/chains";
 import { PRIVY_CONFIGURED } from "@/lib/config";
 import {
-  erc20Abi,
   fetchParticipants,
-  getArcPublicClient,
   getHealthPoolsAddress,
-  healthPoolsAbi,
   parseUsdc,
   shortAddress,
-  USDC_ADDRESS,
 } from "@/lib/contract";
 import { useEmbeddedWallet } from "@/lib/wallet";
-import { ErrorNote } from "@/components/ui";
-
-type BackStatus =
-  | { kind: "idle" }
-  | { kind: "approving" }
-  | { kind: "backing" }
-  | { kind: "done"; txHash: string }
-  | { kind: "error"; message: string };
+import { useUsdcDeposit } from "@/lib/useUsdcDeposit";
+import { ArcTxLink, ErrorNote } from "@/components/ui";
 
 function BackGoalInner({ poolId }: { poolId: bigint }) {
-  const { ready, authenticated, address, login, getArcWalletClient } =
-    useEmbeddedWallet();
+  const { ready, authenticated, address, login } = useEmbeddedWallet();
   const queryClient = useQueryClient();
+  const { status, busy, reset, runUsdcDeposit } = useUsdcDeposit();
   const [participant, setParticipant] = useState<string>("");
   const [amount, setAmount] = useState<string>("");
-  const [status, setStatus] = useState<BackStatus>({ kind: "idle" });
+  const [formError, setFormError] = useState<string | null>(null);
 
   const participantsQuery = useQuery({
     queryKey: ["participants", poolId.toString()],
@@ -49,50 +38,45 @@ function BackGoalInner({ poolId }: { poolId: bigint }) {
   }
 
   const submit = async () => {
+    setFormError(null);
+    let amountUsdc: bigint;
     try {
       if (!/^0x[0-9a-fA-F]{40}$/.test(participant)) {
         throw new Error("Choose a participant to back.");
       }
-      const parsedAmount = parseUsdc(amount.trim());
-      if (parsedAmount <= 0n) {
+      amountUsdc = parseUsdc(amount.trim());
+      if (amountUsdc <= 0n) {
         throw new Error("Enter a USDC amount greater than zero.");
       }
-      const user = participant as Address;
-      const walletClient = await getArcWalletClient();
-      const publicClient = getArcPublicClient();
+    } catch (err) {
+      setFormError(
+        err instanceof Error ? err.message : "Check the backing details.",
+      );
+      return;
+    }
 
-      setStatus({ kind: "approving" });
-      const approveHash = await walletClient.writeContract({
-        address: USDC_ADDRESS,
-        abi: erc20Abi,
-        functionName: "approve",
-        args: [poolsAddress, parsedAmount],
-      });
-      await publicClient.waitForTransactionReceipt({ hash: approveHash });
-
-      setStatus({ kind: "backing" });
-      const backHash = await walletClient.writeContract({
-        address: poolsAddress,
-        abi: healthPoolsAbi,
+    try {
+      await runUsdcDeposit(amountUsdc, {
         functionName: "backGoal",
-        args: [poolId, user, parsedAmount],
+        args: [poolId, participant as Address, amountUsdc],
       });
-      await publicClient.waitForTransactionReceipt({ hash: backHash });
-
-      setStatus({ kind: "done", txHash: backHash });
       setAmount("");
       await queryClient.invalidateQueries({ queryKey: ["pool"] });
-    } catch (err) {
-      setStatus({
-        kind: "error",
-        message:
-          err instanceof Error ? err.message : "Backing transaction failed.",
-      });
+    } catch {
+      // useUsdcDeposit captured the error into status.
     }
   };
 
-  const busy = status.kind === "approving" || status.kind === "backing";
   const participants = participantsQuery.data ?? [];
+
+  const primaryLabel =
+    status.kind === "approving"
+      ? "Approving USDC..."
+      : status.kind === "depositing"
+        ? "Staking behind goal..."
+        : authenticated
+          ? "Approve and back goal"
+          : "Sign in to back";
 
   return (
     <div className="space-y-3">
@@ -164,37 +148,45 @@ function BackGoalInner({ poolId }: { poolId: bigint }) {
             }}
             className="w-full rounded-xl border border-accent/50 bg-surface-raised px-5 py-3.5 text-base font-semibold text-accent hover:bg-accent-deep disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {status.kind === "approving"
-              ? "Approving USDC..."
-              : status.kind === "backing"
-                ? "Staking behind goal..."
-                : authenticated
-                  ? "Approve and back goal"
-                  : "Sign in to back"}
+            {primaryLabel}
           </button>
         </>
       )}
 
+      {status.kind === "approving" || status.kind === "depositing" ? (
+        <p className="text-xs text-muted">
+          Step {status.kind === "approving" ? "1" : "2"} of 2:{" "}
+          {status.kind === "approving"
+            ? "approving USDC"
+            : "placing the stake on Arc"}
+          ...
+        </p>
+      ) : null}
+
       {status.kind === "done" ? (
-        <div className="rounded-xl border border-accent/40 bg-accent-deep/40 p-4">
+        <div className="space-y-1 rounded-xl border border-accent/40 bg-accent-deep/40 p-4">
           <p className="text-sm font-semibold text-accent">
             Stake placed behind the goal.
           </p>
-          <a
-            href={arcTxUrl(status.txHash)}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="mt-1 inline-block break-all text-sm text-accent underline"
-          >
-            View transaction on Arcscan
-          </a>
+          <ArcTxLink txHash={status.approveHash} label="View approval tx" />
+          <br />
+          <ArcTxLink txHash={status.depositHash} label="View backGoal tx" />
         </div>
       ) : null}
+
+      {formError !== null ? (
+        <ErrorNote
+          title="Check the backing details"
+          detail={formError}
+          onRetry={() => setFormError(null)}
+        />
+      ) : null}
+
       {status.kind === "error" ? (
         <ErrorNote
           title="Backing failed"
           detail={status.message}
-          onRetry={() => setStatus({ kind: "idle" })}
+          onRetry={reset}
         />
       ) : null}
     </div>

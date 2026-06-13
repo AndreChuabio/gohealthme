@@ -1,0 +1,359 @@
+"use client";
+
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
+import { decodeEventLog } from "viem";
+import { PRIVY_CONFIGURED } from "@/lib/config";
+import {
+  getArcPublicClient,
+  getHealthPoolsAddress,
+  healthPoolsAbi,
+  parseUsdc,
+} from "@/lib/contract";
+import { useEmbeddedWallet } from "@/lib/wallet";
+import { useUsdcDeposit } from "@/lib/useUsdcDeposit";
+import { ArcTxLink, ErrorNote } from "@/components/ui";
+
+const DURATION_OPTIONS: { label: string; days: number }[] = [
+  { label: "1 day", days: 1 },
+  { label: "3 days", days: 3 },
+  { label: "7 days", days: 7 },
+  { label: "14 days", days: 14 },
+  { label: "30 days", days: 30 },
+];
+
+const SECONDS_PER_DAY = 86_400;
+
+/**
+ * Read the new pool id out of the createPool receipt by decoding the
+ * PoolCreated event. Falls back to the post-tx poolCount (ids run 1..count)
+ * if the log cannot be decoded so the redirect still lands somewhere useful.
+ */
+async function resolveNewPoolId(depositHash: `0x${string}`): Promise<bigint> {
+  const address = getHealthPoolsAddress();
+  if (address === null) {
+    throw new Error("HealthPools contract address is not configured.");
+  }
+  const client = getArcPublicClient();
+  const receipt = await client.getTransactionReceipt({ hash: depositHash });
+
+  for (const log of receipt.logs) {
+    if (log.address.toLowerCase() !== address.toLowerCase()) continue;
+    try {
+      const decoded = decodeEventLog({
+        abi: healthPoolsAbi,
+        data: log.data,
+        topics: log.topics,
+      });
+      if (decoded.eventName === "PoolCreated") {
+        return decoded.args.poolId;
+      }
+    } catch {
+      // Not the event we want; keep scanning.
+    }
+  }
+
+  const count = await client.readContract({
+    address,
+    abi: healthPoolsAbi,
+    functionName: "poolCount",
+  });
+  return count;
+}
+
+function CreatePoolInner() {
+  const router = useRouter();
+  const queryClient = useQueryClient();
+  const { ready, authenticated, login } = useEmbeddedWallet();
+  const { status, busy, runUsdcDeposit } = useUsdcDeposit();
+
+  const [initiative, setInitiative] = useState<string>("");
+  const [goalSpec, setGoalSpec] = useState<string>("");
+  const [entryFee, setEntryFee] = useState<string>("");
+  const [durationDays, setDurationDays] = useState<number>(7);
+  const [bountyModel, setBountyModel] = useState<number>(0);
+  const [initialFunding, setInitialFunding] = useState<string>("");
+  const [formError, setFormError] = useState<string | null>(null);
+  const [redirecting, setRedirecting] = useState<boolean>(false);
+
+  const poolsAddress = getHealthPoolsAddress();
+  if (poolsAddress === null) {
+    return (
+      <ErrorNote
+        title="Contract not configured"
+        detail="Set NEXT_PUBLIC_HEALTH_POOLS_ADDRESS to enable pool creation."
+      />
+    );
+  }
+
+  const submit = async () => {
+    setFormError(null);
+    let entryFeeUsdc: bigint;
+    let fundingUsdc: bigint;
+
+    try {
+      if (initiative.trim() === "") {
+        throw new Error("Enter an initiative name, for example \"sleep\".");
+      }
+      if (goalSpec.trim() === "") {
+        throw new Error("Describe the goal participants must hit.");
+      }
+      entryFeeUsdc = parseUsdc(entryFee.trim() === "" ? "0" : entryFee.trim());
+      if (entryFeeUsdc < 0n) {
+        throw new Error("Entry fee cannot be negative.");
+      }
+      fundingUsdc = parseUsdc(
+        initialFunding.trim() === "" ? "0" : initialFunding.trim(),
+      );
+      if (fundingUsdc <= 0n) {
+        throw new Error("Seed the bounty with an initial funding above zero.");
+      }
+    } catch (err) {
+      setFormError(
+        err instanceof Error ? err.message : "Check the form values.",
+      );
+      return;
+    }
+
+    const now = BigInt(Math.floor(Date.now() / 1000));
+    const periodStart = now;
+    const periodEnd = now + BigInt(durationDays * SECONDS_PER_DAY);
+
+    try {
+      const depositHash = await runUsdcDeposit(fundingUsdc, {
+        functionName: "createPool",
+        args: [
+          initiative.trim(),
+          goalSpec.trim(),
+          entryFeeUsdc,
+          periodStart,
+          periodEnd,
+          bountyModel,
+          fundingUsdc,
+        ],
+      });
+
+      setRedirecting(true);
+      await queryClient.invalidateQueries({ queryKey: ["pools"] });
+      const newId = await resolveNewPoolId(depositHash);
+      router.push(`/pools/${newId.toString()}`);
+    } catch {
+      // useUsdcDeposit already captured the error into status; surface there.
+      setRedirecting(false);
+    }
+  };
+
+  const primaryLabel =
+    status.kind === "approving"
+      ? "Approving USDC..."
+      : status.kind === "depositing"
+        ? "Creating pool..."
+        : redirecting
+          ? "Opening your pool..."
+          : authenticated
+            ? "Approve funding and create pool"
+            : "Sign in to create";
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">
+          Create a bounty pool
+        </h1>
+        <p className="mt-1 text-sm text-muted">
+          Fund a USDC bounty on Arc testnet. Participants join, hit your goal,
+          and get paid the moment their result is verified.
+        </p>
+      </div>
+
+      <div className="space-y-4 rounded-2xl border border-edge bg-surface p-5">
+        <label className="block text-sm font-medium">
+          Initiative
+          <input
+            type="text"
+            placeholder="sleep"
+            value={initiative}
+            onChange={(e) => setInitiative(e.target.value)}
+            className="mt-1 w-full rounded-xl border border-edge bg-surface-raised px-3 py-3 text-base"
+          />
+          <span className="mt-1 block text-xs text-muted">
+            Short tag shown on the pool, for example sleep, workouts, steps.
+          </span>
+        </label>
+
+        <label className="block text-sm font-medium">
+          Goal
+          <textarea
+            placeholder="Sleep at least 7 hours every night for the period."
+            value={goalSpec}
+            onChange={(e) => setGoalSpec(e.target.value)}
+            rows={3}
+            className="mt-1 w-full rounded-xl border border-edge bg-surface-raised px-3 py-3 text-base"
+          />
+          <span className="mt-1 block text-xs text-muted">
+            The human-readable goal participants commit to.
+          </span>
+        </label>
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          <label className="block text-sm font-medium">
+            Entry fee (USDC)
+            <input
+              type="text"
+              inputMode="decimal"
+              placeholder="5.00"
+              value={entryFee}
+              onChange={(e) => setEntryFee(e.target.value)}
+              className="mt-1 w-full rounded-xl border border-edge bg-surface-raised px-3 py-3 text-base"
+            />
+            <span className="mt-1 block text-xs text-muted">
+              What each participant pays to join. Use 0 for a free pool.
+            </span>
+          </label>
+
+          <label className="block text-sm font-medium">
+            Initial funding (USDC)
+            <input
+              type="text"
+              inputMode="decimal"
+              placeholder="100.00"
+              value={initialFunding}
+              onChange={(e) => setInitialFunding(e.target.value)}
+              className="mt-1 w-full rounded-xl border border-edge bg-surface-raised px-3 py-3 text-base"
+            />
+            <span className="mt-1 block text-xs text-muted">
+              USDC you seed the bounty with now. Pulled from your wallet.
+            </span>
+          </label>
+        </div>
+
+        <div className="block text-sm font-medium">
+          Duration
+          <div className="mt-2 flex flex-wrap gap-2">
+            {DURATION_OPTIONS.map((opt) => (
+              <button
+                key={opt.days}
+                type="button"
+                onClick={() => setDurationDays(opt.days)}
+                className={`rounded-xl border px-4 py-2 text-sm font-medium ${
+                  durationDays === opt.days
+                    ? "border-accent/50 bg-accent-deep text-accent"
+                    : "border-edge bg-surface-raised text-muted hover:text-foreground"
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          <span className="mt-1 block text-xs text-muted">
+            Starts now, ends after the selected duration.
+          </span>
+        </div>
+
+        <fieldset className="block text-sm font-medium">
+          <legend>Payout model</legend>
+          <div className="mt-2 space-y-2">
+            <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-edge bg-surface-raised p-3">
+              <input
+                type="radio"
+                name="bountyModel"
+                checked={bountyModel === 0}
+                onChange={() => setBountyModel(0)}
+                className="mt-1"
+              />
+              <span>
+                <span className="block font-semibold">
+                  Fixed bounty per achiever
+                </span>
+                <span className="block text-xs font-normal text-muted">
+                  Each verified achiever receives the same fixed payout.
+                </span>
+              </span>
+            </label>
+            <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-edge bg-surface-raised p-3">
+              <input
+                type="radio"
+                name="bountyModel"
+                checked={bountyModel === 1}
+                onChange={() => setBountyModel(1)}
+                className="mt-1"
+              />
+              <span>
+                <span className="block font-semibold">Split the pot pro-rata</span>
+                <span className="block text-xs font-normal text-muted">
+                  The whole pot is shared across achievers in proportion to
+                  their results.
+                </span>
+              </span>
+            </label>
+          </div>
+        </fieldset>
+
+        <button
+          type="button"
+          disabled={!ready || busy || redirecting}
+          onClick={() => {
+            if (!authenticated) {
+              login();
+              return;
+            }
+            void submit();
+          }}
+          className="w-full rounded-xl bg-accent-strong px-5 py-3.5 text-base font-semibold text-background hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {primaryLabel}
+        </button>
+
+        {status.kind === "approving" || status.kind === "depositing" ? (
+          <div className="rounded-xl border border-edge bg-surface-raised p-4 text-sm">
+            <p className="font-medium">
+              Step {status.kind === "approving" ? "1" : "2"} of 2:{" "}
+              {status.kind === "approving"
+                ? "approving USDC for the pool"
+                : "creating the pool on Arc"}
+            </p>
+          </div>
+        ) : null}
+
+        {status.kind === "done" ? (
+          <div className="space-y-1 rounded-xl border border-accent/40 bg-accent-deep/40 p-4">
+            <p className="text-sm font-semibold text-accent">
+              Pool created on Arc.
+            </p>
+            <ArcTxLink txHash={status.approveHash} label="View approval tx" />
+            <br />
+            <ArcTxLink
+              txHash={status.depositHash}
+              label="View createPool tx"
+            />
+          </div>
+        ) : null}
+
+        {formError !== null ? (
+          <ErrorNote
+            title="Check the form"
+            detail={formError}
+            onRetry={() => setFormError(null)}
+          />
+        ) : null}
+
+        {status.kind === "error" ? (
+          <ErrorNote title="Could not create the pool" detail={status.message} />
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+export default function CreatePool() {
+  if (!PRIVY_CONFIGURED) {
+    return (
+      <ErrorNote
+        title="Sign-in is not configured"
+        detail="Set NEXT_PUBLIC_PRIVY_APP_ID to enable pool creation with an embedded wallet."
+      />
+    );
+  }
+  return <CreatePoolInner />;
+}

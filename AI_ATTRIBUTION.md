@@ -11,5 +11,9 @@ All entries below were produced during the event (after Fri Jun 12, 9:00pm EDT) 
 | contracts/test/HealthPools.t.sol | AI-generated Foundry tests and MockUSDC, human-reviewed |
 | contracts/script/Deploy.s.sol, contracts/foundry.toml | AI-generated deploy script and config, human-reviewed |
 | app/ | AI-assisted Next.js scaffold and components, human-reviewed |
+| app/lib/useUsdcDeposit.ts | AI-generated reusable approve+write deposit hook (Blink swap point), human-reviewed |
+| app/components/CreatePool.tsx, app/app/pools/create/page.tsx | AI-generated pool creation flow, human-reviewed |
+| app/components/FundPool.tsx | AI-generated pool top-up component, human-reviewed |
+| app/components/BackGoal.tsx | AI-assisted refactor onto shared deposit hook, human-reviewed |
 
 Design decisions, architecture, and prize strategy: human-led with AI research support (documented in team notes).

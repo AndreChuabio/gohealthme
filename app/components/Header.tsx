@@ -66,6 +66,12 @@ export default function Header() {
           >
             Dashboard
           </Link>
+          <Link
+            href="/pools/create"
+            className="rounded-lg px-3 py-2 text-muted hover:bg-surface-raised hover:text-foreground"
+          >
+            Create pool
+          </Link>
           {PRIVY_CONFIGURED ? (
             <AuthControls />
           ) : (
