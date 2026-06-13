@@ -1226,3 +1226,45 @@ git commit -m "chore: regression pass for private nanopayments feature"
 - **Spec coverage:** wallet swap (T3–T5), Unlink client (T6), admin/auth (T7), private payout deposit→transfer (T8), withdraw + UI (T9–T10), public-settle safety net intact (T11/S5), error handling (banner T4, UnlinkError surfaced in UI T9, idempotency T8, treasury balance via faucet T11), testing (T1/T2/T8 unit, T11 regression+E2E). USDC decimals centralized (T1). All spec sections map to a task.
 - **Canary/uncertain APIs** are explicitly gated with "verify against installed types" steps (T3.2, T5.2, T6.2, T7.5, T8.5, T9.3–9.4) — these are the riskiest spots; do them with the `.d.ts` open, not from memory.
 - **Type consistency:** `EmbeddedWalletState` (T5) keeps the same field names consumers use; `runPrivatePayout`/`TreasuryClient` signatures (T8) match the route call; `getUnlinkClient` return `{client, unlinkAddress}` used in T9.
+
+---
+
+## REVISION (approved 2026-06-13): server-side Unlink — supersedes Tasks 6, 7, 8
+
+**Why:** the installed `@unlink-xyz/sdk@0.0.2-canary.0` differs from the docs. It has a single root
+export (no `/browser` `/admin` `/client` subpaths), NO `createUnlinkAdmin` / `createUnlinkAuthRoutes` /
+`client.userStorage` / `client.faucet`, and the API key must stay server-side. The high-level client is
+`createUnlink({ engineUrl, apiKey, account, evm? })` returning a `UnlinkClient` with `deposit`,
+`transfer({ token, amount, recipientAddress })`, `withdraw`, `getBalances`, `ensureRegistered`,
+`getAddress`. Accounts come from `unlinkAccount.fromMnemonic({ mnemonic, accountIndex? })`; `unlinkEvm(...)`
+wraps a viem wallet client for the deposit's on-chain Permit2 approval.
+
+**Decision:** run the ENTIRE Unlink flow server-side (custodial for the demo). Privacy guarantee is
+unchanged — deposit → private transfer → withdraw still breaks the on-chain goal↔recipient link.
+Prize reqs unchanged (Dynamic = wallets, Unlink = private routing, Arc = settlement). Productionize to
+non-custodial when Unlink ships browser auth.
+
+**Keys/identity:** everything keys on the participant's Dynamic EVM `address` (no JWT). Participant
+Unlink accounts derive from a master mnemonic + a deterministic `accountIndex` from the address; the
+treasury uses its own mnemonic. Amounts are USDC base-unit strings (6 dp) — `lib/usdc.ts` stays correct.
+
+**Revised files (replace the T6/T7/T8 file list):**
+- `app/lib/server/unlink.ts` — engine config; `treasuryUnlinkClient()`; `participantUnlinkClient(address)`;
+  `participantAccountIndex(address)`; `ARC_USDC_ADDRESS`. Built on `createUnlink`/`unlinkAccount`/`unlinkEvm`.
+- `app/lib/server/unlink-payout.ts` + `.test.ts` — pure `runPrivatePayout({goalId, recipientUnlinkAddress,
+  amountBaseUnits, token, treasury})`, TDD, treasury mocked. Marks claimed BEFORE moving funds (idempotent).
+  Treasury interface: `deposit({token, amount})` then `transfer({token, amount, recipientAddress})`.
+- `app/app/api/unlink/account/route.ts` — POST `{address}` → participant `ensureRegistered()` + `getAddress()`
+  → `linkUnlinkAddress(address, unlinkAddr)` → `{ unlinkAddress }`.
+- `app/app/api/unlink/payout/route.ts` — POST `{address, poolId, goalId, rewardUsdc}` → gate on World
+  verification for the pool (reuse `getVerification`) → resolve/create recipient unlink address →
+  `runPrivatePayout(treasuryUnlinkClient())` → status.
+- `app/app/api/unlink/withdraw/route.ts` — POST `{address, amountUsdc}` → `participantUnlinkClient(address)
+  .withdraw({ token: ARC_USDC_ADDRESS, amount, recipientEvmAddress: address })` → tx.
+- Env: add `UNLINK_ENGINE_URL`, `UNLINK_TREASURY_MNEMONIC`, `UNLINK_USER_MASTER_MNEMONIC` (keep
+  `UNLINK_API_KEY`, `UNLINK_ENVIRONMENT`). DROPPED: `app/lib/unlink/client.ts` (browser),
+  `app/lib/server/unlink-admin.ts`, `app/lib/server/dynamic-jwt.ts`, `app/app/api/unlink/auth/[...route]/route.ts`.
+
+**T9/T10 adjust:** `ClaimPrivately` calls `/api/unlink/account` (once) then `/api/unlink/payout`, and a
+"Withdraw to my wallet" action hits `/api/unlink/withdraw`. No browser Unlink import; pass `address` from
+`useEmbeddedWallet()`.
