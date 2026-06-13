@@ -11,6 +11,7 @@
 
 import { isAddress } from "viem";
 import {
+  poolActionId,
   recordVerification,
   verifyProof,
   type WorldProofPayload,
@@ -37,7 +38,8 @@ export async function POST(request: Request) {
   }
 
   try {
-    const nullifierHash = await verifyProof(proof as WorldProofPayload);
+    const action = poolActionId(String(poolId));
+    const nullifierHash = await verifyProof(proof as WorldProofPayload, action);
     await recordVerification(address, String(poolId), nullifierHash);
     return Response.json({ ok: true, nullifierHash });
   } catch (err) {

@@ -67,12 +67,29 @@ function isV4Payload(proof: WorldProofPayload): proof is V4ProofPayload {
 }
 
 /**
- * Verify an IDKit proof payload against World's cloud verify API.
- * Returns the nullifier hash on success, throws with detail on failure.
+ * Per-pool incognito action string: `<base>-<poolId>`. Each pool is its own
+ * World action so a human gets a distinct nullifier per pool (one entry per
+ * pool), instead of one shared nullifier that could only ever join one pool.
+ * The base must match the client's NEXT_PUBLIC_WORLD_ACTION_ID.
  */
-export async function verifyProof(proof: WorldProofPayload): Promise<string> {
+export function poolActionId(poolId: string | number): string {
+  const base = process.env.WORLD_ACTION_ID ?? "join-pool";
+  return `${base}-${poolId}`;
+}
+
+/**
+ * Verify an IDKit proof payload against World's cloud verify API.
+ * `action` is the per-pool action string the proof was generated for; the
+ * caller builds it server-side from the pool id, so the client never gets to
+ * claim its own action. Returns the nullifier hash on success, throws with
+ * detail on failure.
+ */
+export async function verifyProof(
+  proof: WorldProofPayload,
+  action: string,
+): Promise<string> {
   const appId = requireEnv("WORLD_APP_ID");
-  const actionId = requireEnv("WORLD_ACTION_ID");
+  const actionId = action;
 
   if (isV4Payload(proof)) {
     // Pin the action server-side; never trust the client's claimed action.

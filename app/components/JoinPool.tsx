@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   IDKitRequestWidget,
   proofOfHuman,
@@ -11,6 +11,13 @@ import { useQueryClient } from "@tanstack/react-query";
 import { arcTxUrl } from "@/lib/chains";
 import { PRIVY_CONFIGURED, WORLD_ACTION_ID, WORLD_APP_ID } from "@/lib/config";
 import { useEmbeddedWallet } from "@/lib/wallet";
+import {
+  erc20Abi,
+  getArcPublicClient,
+  getHealthPoolsAddress,
+  healthPoolsAbi,
+  USDC_ADDRESS,
+} from "@/lib/contract";
 import { ErrorNote } from "@/components/ui";
 
 type JoinStatus =
@@ -18,12 +25,13 @@ type JoinStatus =
   | { kind: "preparing" }
   | { kind: "awaiting-proof" }
   | { kind: "verifying" }
+  | { kind: "joining" }
   | { kind: "joined"; txHash: string | null }
   | { kind: "error"; message: string };
 
 interface VerifyResponse {
   ok?: boolean;
-  txHash?: string;
+  nullifierHash?: string;
   error?: string;
 }
 
@@ -52,10 +60,31 @@ function parseRpContext(payload: unknown): RpContext | null {
   return null;
 }
 
-function JoinPoolInner({ poolId }: { poolId: bigint }) {
-  const { ready, authenticated, address, login } = useEmbeddedWallet();
+function JoinPoolInner({
+  poolId,
+  entryFee,
+  alreadyJoined,
+}: {
+  poolId: bigint;
+  entryFee: bigint;
+  alreadyJoined: boolean;
+}) {
+  const { ready, authenticated, address, login, getArcWalletClient } =
+    useEmbeddedWallet();
   const queryClient = useQueryClient();
-  const [status, setStatus] = useState<JoinStatus>({ kind: "idle" });
+  const [status, setStatus] = useState<JoinStatus>(
+    alreadyJoined ? { kind: "joined", txHash: null } : { kind: "idle" },
+  );
+
+  // The on-chain participant read resolves async and after refresh. If it
+  // confirms we are already a participant, show "You are in" instead of the
+  // join button -- never clobber an in-flight join or a fresh success that
+  // already carries its tx hash.
+  useEffect(() => {
+    if (alreadyJoined) {
+      setStatus((s) => (s.kind === "idle" ? { kind: "joined", txHash: null } : s));
+    }
+  }, [alreadyJoined]);
   const [rpContext, setRpContext] = useState<RpContext | null>(null);
   const [widgetOpen, setWidgetOpen] = useState(false);
 
@@ -71,7 +100,9 @@ function JoinPoolInner({ poolId }: { poolId: bigint }) {
   const startJoin = async () => {
     setStatus({ kind: "preparing" });
     try {
-      const res = await fetch("/api/world/rp-context", { method: "GET" });
+      const res = await fetch(`/api/world/rp-context?poolId=${poolId}`, {
+        method: "GET",
+      });
       if (!res.ok) {
         throw new Error(
           `Verification service responded ${res.status}. The /api/world/rp-context route may not be live yet.`,
@@ -113,7 +144,50 @@ function JoinPoolInner({ poolId }: { poolId: bigint }) {
           body.error ?? `Verification failed with status ${res.status}.`,
         );
       }
-      setStatus({ kind: "joined", txHash: body.txHash ?? null });
+      if (
+        typeof body.nullifierHash !== "string" ||
+        body.nullifierHash.length === 0
+      ) {
+        throw new Error(
+          "Verification succeeded but returned no nullifier hash.",
+        );
+      }
+
+      // The proof is verified off-chain; now record the join on-chain. Without
+      // this transaction the address is NOT a pool participant, so the oracle
+      // cannot post a result and settle never pays out. The "joined" state is
+      // only reached after this tx confirms.
+      setStatus({ kind: "joining" });
+      const poolsAddress = getHealthPoolsAddress();
+      if (poolsAddress === null) {
+        throw new Error(
+          "HealthPools contract address is not configured. Set NEXT_PUBLIC_HEALTH_POOLS_ADDRESS.",
+        );
+      }
+      const nullifier = BigInt(body.nullifierHash);
+      const walletClient = await getArcWalletClient();
+      const publicClient = getArcPublicClient();
+
+      // Entry-fee pools pull USDC on join; approve that amount first.
+      if (entryFee > 0n) {
+        const approveHash = await walletClient.writeContract({
+          address: USDC_ADDRESS,
+          abi: erc20Abi,
+          functionName: "approve",
+          args: [poolsAddress, entryFee],
+        });
+        await publicClient.waitForTransactionReceipt({ hash: approveHash });
+      }
+
+      const joinHash = await walletClient.writeContract({
+        address: poolsAddress,
+        abi: healthPoolsAbi,
+        functionName: "joinPool",
+        args: [poolId, nullifier],
+      });
+      await publicClient.waitForTransactionReceipt({ hash: joinHash });
+
+      setStatus({ kind: "joined", txHash: joinHash });
       await queryClient.invalidateQueries({ queryKey: ["pool"] });
       await queryClient.invalidateQueries({ queryKey: ["participants"] });
     } catch (err) {
@@ -148,7 +222,8 @@ function JoinPoolInner({ poolId }: { poolId: bigint }) {
   const busy =
     status.kind === "preparing" ||
     status.kind === "awaiting-proof" ||
-    status.kind === "verifying";
+    status.kind === "verifying" ||
+    status.kind === "joining";
 
   return (
     <div className="space-y-3">
@@ -170,9 +245,11 @@ function JoinPoolInner({ poolId }: { poolId: bigint }) {
             ? "Waiting for World ID..."
             : status.kind === "verifying"
               ? "Verifying proof..."
-              : authenticated
-                ? "Join with World ID"
-                : "Sign in to join"}
+              : status.kind === "joining"
+                ? "Joining on-chain..."
+                : authenticated
+                  ? "Join with World ID"
+                  : "Sign in to join"}
       </button>
       <p className="text-xs text-muted">
         Joining requires a one-time World ID proof of humanity. Your health
@@ -195,7 +272,7 @@ function JoinPoolInner({ poolId }: { poolId: bigint }) {
             }
           }}
           app_id={WORLD_APP_ID}
-          action={WORLD_ACTION_ID}
+          action={`${WORLD_ACTION_ID}-${poolId}`}
           rp_context={rpContext}
           allow_legacy_proofs={true}
           preset={proofOfHuman(
@@ -217,7 +294,15 @@ function JoinPoolInner({ poolId }: { poolId: bigint }) {
   );
 }
 
-export default function JoinPool({ poolId }: { poolId: bigint }) {
+export default function JoinPool({
+  poolId,
+  entryFee,
+  alreadyJoined = false,
+}: {
+  poolId: bigint;
+  entryFee: bigint;
+  alreadyJoined?: boolean;
+}) {
   if (!PRIVY_CONFIGURED) {
     return (
       <ErrorNote
@@ -226,5 +311,11 @@ export default function JoinPool({ poolId }: { poolId: bigint }) {
       />
     );
   }
-  return <JoinPoolInner poolId={poolId} />;
+  return (
+    <JoinPoolInner
+      poolId={poolId}
+      entryFee={entryFee}
+      alreadyJoined={alreadyJoined}
+    />
+  );
 }

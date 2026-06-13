@@ -203,7 +203,11 @@ export default function PoolDetail({ id }: { id: string }) {
                 No one has joined yet, be the first.
               </p>
             ) : null}
-            <JoinPool poolId={pool.id} />
+            <JoinPool
+              poolId={pool.id}
+              entryFee={pool.entryFee}
+              alreadyJoined={hasJoined}
+            />
           </section>
 
           {isDocGoal && hasJoined ? (

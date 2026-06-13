@@ -29,7 +29,9 @@ const HEALTH_POOLS_ABI = [
       { name: "poolId", type: "uint256" },
       { name: "user", type: "address" },
       { name: "verdict", type: "bool" },
-      { name: "multiplierBps", type: "uint256" },
+      // MUST be uint16 to match HealthPools.recordResult on-chain; uint256 here
+      // produces a different 4-byte selector and the call reverts (no match).
+      { name: "multiplierBps", type: "uint16" },
     ],
     outputs: [],
   },
@@ -96,7 +98,8 @@ export async function recordResult(
     address: contract,
     abi: HEALTH_POOLS_ABI,
     functionName: "recordResult",
-    args: [poolId, user, verdict, multiplierBps],
+    // multiplierBps is uint16 on-chain (<= 30000); viem types it as number.
+    args: [poolId, user, verdict, Number(multiplierBps)],
   });
   const hash = await wallet.writeContract(request);
   const receipt = await publicClient.waitForTransactionReceipt({ hash });
