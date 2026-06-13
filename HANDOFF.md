@@ -241,3 +241,75 @@ Sync points: after schema freeze, after first live verdict, after first on-chain
   path A live settle with inputDigest on-chain.
 - Stretch: 4th modality; path B TEE attester live; multi-turn agent; reasonBitmap UI; fraud nudges.
 - The goal agent and extra modalities must NOT sit on the live settlement critical path — they can't break the demo.
+
+---
+
+# Dynamic + Unlink (non-custodial private payments) — setup, run & login troubleshooting (2026-06-13)
+
+Supersedes the Privy notes above. Wallets now use **Dynamic**; private USDC reward payouts use
+**Unlink** (non-custodial — each user's Unlink account is derived from their OWN wallet signature).
+The existing oracle public settle is untouched. On `main`.
+
+## 1. Env setup (the #1 cause of "it's not working")
+
+The Next app reads `app/.env.local`. Repo-root `.env` is ALSO loaded server-side (via
+`next.config.ts` `loadRootEnv`) — BUT `NEXT_PUBLIC_*` vars are inlined into the **browser** ONLY
+from `app/.env.local`. So the browser-exposed vars MUST be in `app/.env.local`:
+
+```
+# browser (NEXT_PUBLIC_* MUST be in app/.env.local)
+NEXT_PUBLIC_DYNAMIC_ENVIRONMENT_ID=...      # Dynamic dashboard env id
+NEXT_PUBLIC_UNLINK_APP_ID=...               # Unlink Project ID (dashboard.unlink.xyz -> project -> Project ID)
+NEXT_PUBLIC_HEALTH_POOLS_ADDRESS=0x72D3...  # = HEALTH_POOLS_ADDRESS
+NEXT_PUBLIC_WORLD_APP_ID=app_...            # = WORLD_APP_ID
+NEXT_PUBLIC_WORLD_ACTION_ID=join-pool       # = WORLD_ACTION_ID
+# server (can be in app/.env.local or repo-root .env)
+UNLINK_API_KEY=...                          # dashboard.unlink.xyz -> API Keys (SECRET, server only)
+UNLINK_ENVIRONMENT=arc-testnet
+# engine URL is OPTIONAL — pass EITHER environment OR engineUrl, never both (0.3.0 rejects both).
+# "arc-testnet" resolves the URL internally. If you set it explicitly it is:
+UNLINK_ENGINE_URL=https://arc-testnet-production-api.unlink.xyz
+UNLINK_TREASURY_PRIVATE_KEY=<32-byte hex>   # EVM wallet that funds payouts. MUST be 64 hex chars.
+                                            # For the demo, reuse the DEPLOYER key (funded ~13 USDC).
+UNLINK_TREASURY_MNEMONIC="<12-word BIP-39>" # treasury's Unlink shielded account (you generate this)
+WORLD_SIGNER_PRIVATE_KEY=0x...              # World ID 4.0 RP signer (World portal). /api/world/rp-context needs it.
+WORLD_RP_ID=rp_...                          # World ID 4.0 RP id
+```
+`UNLINK_USER_MASTER_MNEMONIC` is GONE (non-custodial — user accounts derive client-side).
+
+## 2. Run
+```
+cd app && npm install && npm run dev   # -> http://localhost:3000
+```
+If the build errors with `@next/swc-darwin-arm64` "content extends beyond end of file" (corrupt
+native binary from a churny install): `rm -rf node_modules/@next/swc-darwin-arm64 && npm install`.
+
+## 3. Login troubleshooting (Andre's issue)
+Login is Dynamic's wallet/email handshake — it runs BEFORE any of our code, so failures don't hit
+the server log; it's the browser/wallet, not the app.
+- **"Message signature denied" / MetaMask sign never completes / console `StreamMiddleware - Unknown
+  response id`** = MULTIPLE wallet extensions (Phantom + Coinbase + MetaMask) fighting over
+  `window.ethereum`. FIX: use **email login**, OR disable Phantom & Coinbase at `chrome://extensions`
+  (keep only MetaMask) and hard-reload (Cmd-Shift-R).
+- **MetaMask popup didn't appear**: the request is queued in the extension — click the 🦊 icon to find
+  the pending Connect/Signature request. Unlock MetaMask first (locked wallet silently fails).
+- **Two steps**: MetaMask first asks to **Connect** (click Connect), THEN **Sign** (click Sign). Both required.
+- **RECOMMENDED for demos: email login** — top field -> Continue -> 6-digit code -> Dynamic embedded
+  wallet on Arc. No popup, no extension conflict.
+
+## 4. "Insufficient funds" when joining/claiming
+Even a free join needs a little Arc gas (USDC is the gas token, ~0.0014 USDC). A fresh connected
+wallet has $0. FIX: send a bit of Arc USDC to the connected wallet's address — from the deployer
+wallet `0xc278e8e4621A0Ba02bACB6291E595ecd168A04e1` (holds ~13 USDC) or Circle faucet
+https://faucet.circle.com. The treasury (= deployer) funds the actual payouts.
+
+## 5. Non-custodial flow (what happens)
+sign in -> **Join with World ID** (needs WORLD_SIGNER_PRIVATE_KEY) -> **Claim privately**: user signs
+ONE message -> `account.fromEthereumSignature` derives their Unlink account client-side -> server
+treasury deposits + privately transfers the reward to that address -> user **withdraws** client-side
+to their wallet. Routes: `/api/unlink/{register,authorization-token,payout}`. SDK: `@unlink-xyz/sdk@0.3.0-canary.598`.
+
+## 6. Known non-blocking noise
+`DynamicWagmiConnector WARN: Chain Sepolia not in Dynamic config` + `UnknownRpcError: Transport
+request timed out` = leftover Sepolia chain in the wagmi config (from dropped ENS). Harmless console
+noise; safe to remove Sepolia from `app/app/providers.tsx` + `app/lib/chains.ts` (Arc-only app).
