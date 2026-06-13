@@ -28,6 +28,11 @@ All entries below were produced during the event (after Fri Jun 12, 9:00pm EDT) 
 | contracts/src/HealthVerdict.sol (onReport, forwarder, IReceiver) | AI-assisted KeystoneForwarder receiver path added to the existing registry, modeled on the reference LoanGate.onReport, human-reviewed |
 | contracts/test/HealthVerdict.t.sol (onReport / forwarder tests, MockKeystoneForwarder) | AI-generated Foundry tests for the CRE ingestion path, human-reviewed |
 | cre/README.md | AI-generated CRE workflow docs (callback architecture, privacy design, simulation steps, booth dependencies), human-reviewed |
+| app/app/providers.tsx, app/lib/wallet.ts, app/lib/dynamic.ts | AI-assisted wallet-layer swap from Privy to Dynamic (DynamicContextProvider + EthereumWalletConnectors + DynamicWagmiConnector, Arc EvmNetwork override); `useEmbeddedWallet()` rewritten over Dynamic hooks keeping the same public interface; wagmi downgraded v3→v2 for the official Dynamic connector, human-reviewed |
+| app/lib/server/unlink.ts, app/lib/server/unlink-payout.ts (+ test) | AI-assisted server-side Unlink integration (private USDC nanopayments on Arc): treasury + participant clients via `createUnlink`/`unlinkAccount`/`unlinkEvm` against `@unlink-xyz/sdk` canary; deposit→private-transfer payout core (TDD, idempotent), human-reviewed |
+| app/app/api/unlink/account, payout, withdraw routes | AI-generated routes: ensure/return a participant's Unlink account, World-gated private payout (treasury deposit→shielded transfer), and withdraw-to-EVM, human-reviewed |
+| app/lib/usdc.ts (+ test), app/lib/server/claims.ts (+ test) | AI-generated USDC 6-decimal base-unit helper and claimed-goal + userId↔unlink-address store (TDD), human-reviewed |
+| app/components/ClaimPrivately.tsx, app/components/PoolDetail.tsx (private-claim wiring) | AI-generated "receive this reward privately" UI (account→payout→withdraw phases) surfaced for joined participants, human-reviewed |
 
 Design decisions, architecture, and prize strategy: human-led with AI research support (documented in team notes).
 
