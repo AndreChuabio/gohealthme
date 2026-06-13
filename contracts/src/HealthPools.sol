@@ -10,6 +10,13 @@ interface IERC20 {
     function balanceOf(address account) external view returns (uint256);
 }
 
+/// @dev Minimal surface of the optional verdict registry. When configured,
+///      HealthPools requires canSettle(goalId) to be true before a participant
+///      counts as an achiever. See HealthVerdict.sol.
+interface IHealthVerdict {
+    function canSettle(bytes32 goalId) external view returns (bool);
+}
+
 /// @title HealthPools
 /// @notice Sybil-resistant health-goal bounty pools settled in USDC (GoHealthMe,
 ///         ETHGlobal NY 2026). Privacy invariant: raw health data never touches
@@ -67,6 +74,12 @@ contract HealthPools {
     address public owner;
     address public oracle;
 
+    /// @notice Optional Chainlink Confidential AI verdict registry. When set to a
+    ///         non-zero address, settle() additionally requires a passing verdict
+    ///         (canSettle) for each participant to count as an achiever. Default
+    ///         address(0) preserves the original oracle-only behavior exactly.
+    address public healthVerdict;
+
     uint256 public poolCount; // pool ids run 1..poolCount
     mapping(uint256 => Pool) internal pools;
     mapping(uint256 => address[]) internal participantList;
@@ -99,6 +112,7 @@ contract HealthPools {
     event FundsSwept(uint256 indexed poolId, address indexed creator, uint256 amount);
     event OracleUpdated(address indexed previousOracle, address indexed newOracle);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    event HealthVerdictUpdated(address indexed previousRegistry, address indexed newRegistry);
 
     // ------------------------------------------------------------ modifiers
 
@@ -146,6 +160,13 @@ contract HealthPools {
         require(newOwner != address(0), "ZERO_OWNER");
         emit OwnershipTransferred(owner, newOwner);
         owner = newOwner;
+    }
+
+    /// @notice Enable, swap, or disable the verdict-gating registry. Pass
+    ///         address(0) to disable and fall back to the oracle-only path.
+    function setHealthVerdict(address newRegistry) external onlyOwner {
+        emit HealthVerdictUpdated(healthVerdict, newRegistry);
+        healthVerdict = newRegistry;
     }
 
     // -------------------------------------------------------------- actions
@@ -335,9 +356,25 @@ contract HealthPools {
         p = pools[poolId];
     }
 
+    /// @dev A participant is an achiever iff the oracle recorded a passing
+    ///      result AND, when the verdict registry is configured, that registry
+    ///      also clears them via canSettle. With healthVerdict == address(0) this
+    ///      is identical to the original `resultRecorded && verdict` check, so the
+    ///      proven happy path is unchanged.
     function _isAchiever(uint256 poolId, address user) internal view returns (bool) {
         Participant storage part = participants[poolId][user];
-        return part.resultRecorded && part.verdict;
+        if (!(part.resultRecorded && part.verdict)) return false;
+
+        address registry = healthVerdict;
+        if (registry == address(0)) return true;
+
+        return IHealthVerdict(registry).canSettle(computeGoalId(poolId, user));
+    }
+
+    /// @notice Deterministic goal id shared with the off-chain CRE pipeline and
+    ///         the HealthVerdict registry. All three must agree on this hash.
+    function computeGoalId(uint256 poolId, address participant) public pure returns (bytes32) {
+        return keccak256(abi.encode(poolId, participant));
     }
 
     /// @dev Aggregate achiever stats for settlement. Bounded by MAX_PARTICIPANTS.
@@ -348,8 +385,9 @@ contract HealthPools {
     {
         address[] storage plist = participantList[poolId];
         for (uint256 i = 0; i < plist.length; i++) {
-            Participant storage part = participants[poolId][plist[i]];
-            if (part.resultRecorded && part.verdict) {
+            address user = plist[i];
+            if (_isAchiever(poolId, user)) {
+                Participant storage part = participants[poolId][user];
                 achieverCount++;
                 sumMultiplierBps += part.multiplierBps;
                 backingOnAchievers += part.backingTotal;

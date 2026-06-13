@@ -1,0 +1,205 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+/// @title HealthVerdict
+/// @notice On-chain verdict registry for GoHealthMe (ETHGlobal NY 2026). A
+///         Chainlink Confidential AI run produces a signed inference digest and
+///         a structured verdict off-chain; the authorized attester writes that
+///         verdict here, causing an on-chain state change. HealthPools.settle()
+///         consults this registry as an additional proof layer when configured.
+///
+/// Privacy invariant: no raw health data ever lands on chain. We store only the
+/// boolean outcome, a confidence tier, a facet bitmap, and the keccak digest of
+/// the signed inference — never the inputs.
+///
+/// One verdict per goalId. A verdict is one-shot by default (re-recording by the
+/// attester reverts). The owner can force an override via overrideVerdict() to
+/// recover from a bad attestation; overrides emit a distinct event so the audit
+/// trail shows the correction explicitly.
+contract HealthVerdict {
+    // ----------------------------------------------------------- confidence
+
+    /// Confidence tiers. canSettle() requires anything above LOW.
+    uint8 public constant CONFIDENCE_LOW = 0;
+    uint8 public constant CONFIDENCE_MEDIUM = 1;
+    uint8 public constant CONFIDENCE_HIGH = 2;
+
+    // -------------------------------------------------------- facet bitmap
+
+    /// Each bit of Verdict.bitmap records one verification facet that the
+    /// off-chain pipeline confirmed. They are advisory metadata for the UI and
+    /// for richer settlement policies; canSettle() itself only gates on
+    /// verified + confidence, so the facet meaning can evolve without changing
+    /// the settlement contract.
+    uint16 public constant FACET_WEARABLE = 1 << 0; // bit0: wearable data verified
+    uint16 public constant FACET_WORLD_ID = 1 << 1; // bit1: World ID confirmed
+    uint16 public constant FACET_AI_ATTESTED = 1 << 2; // bit2: AI attested
+    uint16 public constant FACET_NOT_DUPLICATE = 1 << 3; // bit3: not a duplicate claim
+
+    /// Mask of all currently defined facet bits. Recording a bitmap with unknown
+    /// bits set reverts, so the on-chain record stays meaningful.
+    uint16 public constant FACET_MASK =
+        FACET_WEARABLE | FACET_WORLD_ID | FACET_AI_ATTESTED | FACET_NOT_DUPLICATE;
+
+    // -------------------------------------------------------------- types
+
+    struct Verdict {
+        bool verified; // did the goal pass verification
+        uint8 confidence; // 0 = low, 1 = medium, 2 = high
+        bytes32 digest; // keccak of the signed inference from the attester
+        address attester; // who wrote this verdict
+        uint64 timestamp; // block time the verdict was recorded
+        uint16 bitmap; // verification facets (see FACET_* constants)
+    }
+
+    // ------------------------------------------------------------ storage
+
+    address public owner;
+    address public attester; // the only address allowed to recordVerdict
+    mapping(bytes32 => Verdict) internal verdicts;
+    mapping(bytes32 => bool) public recorded; // true once a goalId has any verdict
+
+    // ------------------------------------------------------------- events
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    event AttesterUpdated(address indexed previousAttester, address indexed newAttester);
+    event VerdictRecorded(
+        bytes32 indexed goalId,
+        bool verified,
+        uint8 confidence,
+        bytes32 digest,
+        address indexed attester,
+        uint16 bitmap
+    );
+    event VerdictOverridden(
+        bytes32 indexed goalId,
+        bool verified,
+        uint8 confidence,
+        bytes32 digest,
+        address indexed overrider,
+        uint16 bitmap
+    );
+
+    // ---------------------------------------------------------- modifiers
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "NOT_OWNER");
+        _;
+    }
+
+    modifier onlyAttester() {
+        require(msg.sender == attester, "NOT_ATTESTER");
+        _;
+    }
+
+    // -------------------------------------------------------- constructor
+
+    /// @param attester_ the address allowed to record verdicts (the relayer that
+    ///        submits the Chainlink Confidential AI result on chain).
+    constructor(address attester_) {
+        require(attester_ != address(0), "ZERO_ATTESTER");
+        owner = msg.sender;
+        attester = attester_;
+        emit OwnershipTransferred(address(0), msg.sender);
+        emit AttesterUpdated(address(0), attester_);
+    }
+
+    // -------------------------------------------------------------- admin
+
+    function setAttester(address newAttester) external onlyOwner {
+        require(newAttester != address(0), "ZERO_ATTESTER");
+        emit AttesterUpdated(attester, newAttester);
+        attester = newAttester;
+    }
+
+    function transferOwnership(address newOwner) external onlyOwner {
+        require(newOwner != address(0), "ZERO_OWNER");
+        emit OwnershipTransferred(owner, newOwner);
+        owner = newOwner;
+    }
+
+    // ------------------------------------------------------------ actions
+
+    /// @notice Record the verdict for a goal. One-shot: reverts if the goalId
+    ///         already has a verdict (use overrideVerdict to correct one).
+    /// @param goalId     deterministic id, see computeGoalId.
+    /// @param verified   whether the goal passed verification.
+    /// @param confidence 0 = low, 1 = medium, 2 = high.
+    /// @param digest     keccak of the signed inference (never the raw inputs).
+    /// @param bitmap     facet bits, must be a subset of FACET_MASK.
+    function recordVerdict(
+        bytes32 goalId,
+        bool verified,
+        uint8 confidence,
+        bytes32 digest,
+        uint16 bitmap
+    ) external onlyAttester {
+        require(!recorded[goalId], "ALREADY_RECORDED");
+        require(confidence <= CONFIDENCE_HIGH, "BAD_CONFIDENCE");
+        require(bitmap & ~FACET_MASK == 0, "BAD_BITMAP");
+
+        recorded[goalId] = true;
+        verdicts[goalId] = Verdict({
+            verified: verified,
+            confidence: confidence,
+            digest: digest,
+            attester: msg.sender,
+            timestamp: uint64(block.timestamp),
+            bitmap: bitmap
+        });
+
+        emit VerdictRecorded(goalId, verified, confidence, digest, msg.sender, bitmap);
+    }
+
+    /// @notice Owner escape hatch to correct a bad attestation. Works whether or
+    ///         not a verdict already exists, and is logged distinctly so the
+    ///         audit trail shows the correction.
+    function overrideVerdict(
+        bytes32 goalId,
+        bool verified,
+        uint8 confidence,
+        bytes32 digest,
+        uint16 bitmap
+    ) external onlyOwner {
+        require(confidence <= CONFIDENCE_HIGH, "BAD_CONFIDENCE");
+        require(bitmap & ~FACET_MASK == 0, "BAD_BITMAP");
+
+        recorded[goalId] = true;
+        verdicts[goalId] = Verdict({
+            verified: verified,
+            confidence: confidence,
+            digest: digest,
+            attester: msg.sender,
+            timestamp: uint64(block.timestamp),
+            bitmap: bitmap
+        });
+
+        emit VerdictOverridden(goalId, verified, confidence, digest, msg.sender, bitmap);
+    }
+
+    // ---------------------------------------------------------------- views
+
+    /// @notice Settlement gate: a goal may settle only if it has a recorded
+    ///         verdict that is verified AND has at least MEDIUM confidence.
+    function canSettle(bytes32 goalId) external view returns (bool) {
+        Verdict storage v = verdicts[goalId];
+        return v.verified && v.confidence != CONFIDENCE_LOW;
+    }
+
+    function getVerdict(bytes32 goalId) external view returns (Verdict memory) {
+        return verdicts[goalId];
+    }
+
+    /// @notice True if a specific facet bit is set in a goal's verdict.
+    function hasFacet(bytes32 goalId, uint16 facet) external view returns (bool) {
+        return verdicts[goalId].bitmap & facet == facet;
+    }
+
+    // -------------------------------------------------------------- helpers
+
+    /// @notice Deterministic goal id shared by the off-chain CRE pipeline and the
+    ///         on-chain contracts. Both sides must compute it identically.
+    function computeGoalId(uint256 poolId, address participant) external pure returns (bytes32) {
+        return keccak256(abi.encode(poolId, participant));
+    }
+}
