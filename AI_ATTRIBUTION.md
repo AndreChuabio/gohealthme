@@ -33,6 +33,7 @@ All entries below were produced during the event (after Fri Jun 12, 9:00pm EDT) 
 | app/app/api/unlink/account, payout, withdraw routes | AI-generated routes: ensure/return a participant's Unlink account, World-gated private payout (treasury deposit→shielded transfer), and withdraw-to-EVM, human-reviewed |
 | app/lib/usdc.ts (+ test), app/lib/server/claims.ts (+ test) | AI-generated USDC 6-decimal base-unit helper and claimed-goal + userId↔unlink-address store (TDD), human-reviewed |
 | app/components/ClaimPrivately.tsx, app/components/PoolDetail.tsx (private-claim wiring) | AI-generated "receive this reward privately" UI (account→payout→withdraw phases) surfaced for joined participants, human-reviewed |
+| app/components/JoinPool.tsx, app/components/PoolDetail.tsx, app/lib/server/world.ts, app/app/api/world/rp-context + verify routes, app/lib/server/oracle.ts, scripts/doc-evidence-test.sh | AI-assisted World ID join + multimodal recordResult fixes: submit joinPool on-chain after proof verify, per-pool actions (join-pool-<poolId>) to fix nullifier replay + one-pool-ever, on-mount already-joined detection, oracle recordResult ABI uint16 selector fix, human-reviewed |
 
 Design decisions, architecture, and prize strategy: human-led with AI research support (documented in team notes).
 
