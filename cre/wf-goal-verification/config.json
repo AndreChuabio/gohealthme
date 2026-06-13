@@ -1,15 +1,8 @@
 {
-  "owner": "0xA56eAD3A32b6261bDE6C2A45495C9250084F7F2D",
-  "judgeUrl": "http://localhost:8787/judge",
-  "judgeSecretName": "judgeApiKey",
-  "useMockJudge": true,
+  "poolId": 1,
+  "user": "0x8ba1f109551bD432803012645Ac136ddd64DBA72",
   "healthVerdictAddress": "0x0000000000000000000000000000000000000000",
   "chainSelector": "5042002",
   "writeGasLimit": "400000",
-  "authorizedKeys": [
-    {
-      "type": "KEY_TYPE_ECDSA_EVM",
-      "publicKey": "0xA56eAD3A32b6261bDE6C2A45495C9250084F7F2D"
-    }
-  ]
+  "authorizedKeys": []
 }

@@ -2,11 +2,17 @@
 # CRE WORKFLOW SETTINGS — wf-goal-verification
 # =========================================================================
 # Per-target workflow settings for the cre CLI. Schema matches the official
-# Chainlink minimal-cre-examples http-trigger template:
+# Chainlink confidential-ai-attester / minimal-cre-examples http-trigger
+# template:
 #   <target>:
 #     user-workflow:      { workflow-name }
 #     workflow-artifacts: { workflow-path, config-path, secrets-path }
 # Paths are relative to this file.
+#
+# Callback architecture: the workflow's HTTP trigger IS the Confidential AI
+# Attester's cre_callback endpoint. No Vault DON secret is needed — the inference
+# (and its API key) live on the app side (cre/scripts/call-attester.mjs), not in
+# the workflow. So secrets-path is empty for every target.
 # =========================================================================
 
 local-simulation:
@@ -15,7 +21,6 @@ local-simulation:
   workflow-artifacts:
     workflow-path: "./main.ts"
     config-path: "./config.json"
-    # No secrets needed for the mock-judge simulation path (config.useMockJudge=true).
     secrets-path: ""
 
 staging-settings:
@@ -24,5 +29,4 @@ staging-settings:
   workflow-artifacts:
     workflow-path: "./main.ts"
     config-path: "./config.json"
-    # Live judge call needs the judgeApiKey secret provisioned in the Vault DON.
-    secrets-path: "../secrets.yaml"
+    secrets-path: ""

@@ -1,66 +1,67 @@
 /**
- * Standalone dry-run for wf-goal-verification.
+ * Standalone offline dry-run for wf-goal-verification (callback architecture).
  *
  * The real `cre workflow simulate` runs the workflow inside the CRE WASM host,
- * which supplies the trigger, the confidential-http capability, and the DON
- * report signer. This harness reproduces the DETERMINISTIC core of the workflow
- * (goalId, mock judge tiering, digest, facet bitmap, and the exact ABI-encoded
- * recordVerdict call) using only viem, so the pipeline can be verified in plain
- * Node before the CRE CLI / DON are wired up.
+ * which supplies the HTTP trigger and the DON report signer. This harness
+ * reproduces the DETERMINISTIC core of the callback handler (parse the Attester
+ * callback, extract the health verdict, derive the digest, compute goalId, and
+ * ABI-encode the exact HealthVerdict.onReport report body) using only viem, so
+ * the pipeline can be verified in plain Node without the CRE CLI / DON.
  *
  * What it canNOT do (needs the CRE host): produce a real DON-signed Report or
  * perform the on-chain writeReport. Those are covered by `cre workflow simulate`
  * and, for a live write, the Chainlink booth (see README).
  *
- * Run: npx tsx src/dry-run.ts [path/to/payload.json]
+ * Run: npx tsx src/dry-run.ts [path/to/callback-payload.json]
  */
 
 import { readFileSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import {
-  encodeAbiParameters,
-  encodeFunctionData,
-  keccak256,
-  stringToHex,
-  type Address,
-  type Hex,
-} from 'viem'
+import { encodeAbiParameters, keccak256, type Address, type Hex } from 'viem'
 
 type Confidence = 'low' | 'medium' | 'high'
 const CONFIDENCE_TO_U8: Record<Confidence, number> = { low: 0, medium: 1, high: 2 }
 const FACET_WEARABLE = 1 << 0
 const FACET_AI_ATTESTED = 1 << 2
 
-const RECORD_VERDICT_ABI = [
-  {
-    type: 'function',
-    name: 'recordVerdict',
-    stateMutability: 'nonpayable',
-    inputs: [
-      { name: 'goalId', type: 'bytes32' },
-      { name: 'verified', type: 'bool' },
-      { name: 'confidence', type: 'uint8' },
-      { name: 'digest', type: 'bytes32' },
-      { name: 'bitmap', type: 'uint16' },
-    ],
-    outputs: [],
-  },
+// Report body ABI — must match HealthVerdict.onReport's abi.decode.
+const REPORT_ABI = [
+  { name: 'goalId', type: 'bytes32' },
+  { name: 'verified', type: 'bool' },
+  { name: 'confidence', type: 'uint8' },
+  { name: 'digest', type: 'bytes32' },
+  { name: 'bitmap', type: 'uint16' },
 ] as const
 
-interface GoalVerificationInput {
-  poolId: number
-  user: Address
-  goalSpec: string
-  baselineWeekAvg: number
-  currentWindowAvg: number
-  streakDays: number
+interface InferenceCallback {
+  id?: string
+  status?: string
+  output?: string
+  resources?: { digest?: string; response_digest?: string }[]
+  resource_summaries?: { digest?: string }[]
 }
 
-interface JudgeVerdict {
-  verified: boolean
-  confidence: Confidence
-  multiplierBps: number
+interface HealthVerdictJson {
+  verified?: boolean
+  confidence?: string
+  reason?: string
+  metric_value?: number
+  threshold?: number
+}
+
+const parseHealthVerdict = (output: string): HealthVerdictJson => {
+  const fenced = output.trim().match(/^```(?:[a-zA-Z0-9]+)?\s*([\s\S]*?)\s*```$/)
+  return JSON.parse(fenced ? fenced[1].trim() : output) as HealthVerdictJson
+}
+
+const normalizeConfidence = (c: unknown): Confidence =>
+  c === 'high' || c === 'medium' ? c : 'low'
+
+const toBytes32 = (hex: string): Hex => {
+  const h = hex.replace(/^0[xX]/, '')
+  if (h.length !== 64) throw new Error(`expected a 32-byte hex digest, got "${hex}"`)
+  return `0x${h.toLowerCase()}` as Hex
 }
 
 const computeGoalId = (poolId: number, user: Address): Hex =>
@@ -74,55 +75,57 @@ const computeGoalId = (poolId: number, user: Address): Hex =>
     ),
   )
 
-const mockJudge = (input: GoalVerificationInput): JudgeVerdict => {
-  const improved = input.currentWindowAvg > input.baselineWeekAvg
-  const gain = input.baselineWeekAvg > 0
-    ? (input.currentWindowAvg - input.baselineWeekAvg) / input.baselineWeekAvg
-    : 0
-  if (improved && input.streakDays >= 5) {
-    return { verified: true, confidence: 'high', multiplierBps: 12_000 + Math.round(gain * 5_000) }
-  }
-  if (improved || input.streakDays >= 3) {
-    return { verified: true, confidence: 'medium', multiplierBps: 10_500 }
-  }
-  return { verified: false, confidence: 'low', multiplierBps: 0 }
+const __dirname = dirname(fileURLToPath(import.meta.url))
+const payloadPath =
+  process.argv[2] ?? resolve(__dirname, '../simulation/callback-payload.json')
+const configPath = resolve(__dirname, '../wf-goal-verification/config.json')
+
+const callback = JSON.parse(readFileSync(payloadPath, 'utf8')) as InferenceCallback
+const config = JSON.parse(readFileSync(configPath, 'utf8')) as {
+  poolId: number
+  user: Address
 }
 
-const __dirname = dirname(fileURLToPath(import.meta.url))
-const payloadPath = process.argv[2] ?? resolve(__dirname, '../payloads/goal-verification.json')
-const input = JSON.parse(readFileSync(payloadPath, 'utf8')) as GoalVerificationInput
+if (callback.status !== 'completed') {
+  console.log(JSON.stringify({ id: callback.id ?? null, status: callback.status ?? null, action: 'skipped' }, null, 2))
+  process.exit(0)
+}
 
-const goalId = computeGoalId(input.poolId, input.user)
-const verdict = mockJudge(input)
-const digest = keccak256(
-  stringToHex(
-    JSON.stringify({
-      verified: verdict.verified,
-      confidence: verdict.confidence,
-      multiplierBps: verdict.multiplierBps,
-    }),
-  ),
-)
+const v = parseHealthVerdict(callback.output ?? '')
+const verified = v.verified === true
+const confidence = normalizeConfidence(v.confidence)
+const digestSource =
+  callback.resources?.[0]?.response_digest ??
+  callback.resources?.[0]?.digest ??
+  callback.resource_summaries?.[0]?.digest
+if (!digestSource) throw new Error('callback missing response_digest and document digest')
+const digest = toBytes32(digestSource)
+const goalId = computeGoalId(config.poolId, config.user)
 const bitmap = FACET_AI_ATTESTED | FACET_WEARABLE
-const encodedCall = encodeFunctionData({
-  abi: RECORD_VERDICT_ABI,
-  functionName: 'recordVerdict',
-  args: [goalId, verdict.verified, CONFIDENCE_TO_U8[verdict.confidence], digest, bitmap],
-})
+
+const encodedReport = encodeAbiParameters(REPORT_ABI, [
+  goalId,
+  verified,
+  CONFIDENCE_TO_U8[confidence],
+  digest,
+  bitmap,
+])
 
 const out = {
   workflow: 'wf-goal-verification',
-  mode: 'dry-run (deterministic core, no DON signature / no on-chain write)',
-  input,
+  mode: 'dry-run (deterministic callback core, no DON signature / no on-chain write)',
+  callbackId: callback.id ?? null,
+  status: callback.status,
   goalId,
-  verdict,
-  confidenceU8: CONFIDENCE_TO_U8[verdict.confidence],
+  verdict: { verified, confidence, reason: v.reason ?? '', metricValue: v.metric_value ?? null, threshold: v.threshold ?? null },
+  confidenceU8: CONFIDENCE_TO_U8[confidence],
   digest,
   bitmap,
   bitmapBits: { wearable: Boolean(bitmap & FACET_WEARABLE), aiAttested: Boolean(bitmap & FACET_AI_ATTESTED) },
-  receiverCall: 'HealthVerdict.recordVerdict(bytes32,bool,uint8,bytes32,uint16)',
-  encodedCall,
-  note: 'In the CRE host this encodedCall is wrapped by runtime.report(...) into a DON-signed report, then EVMClient.writeReport forwards it to HealthVerdict on Arc.',
+  receiverCall: 'HealthVerdict.onReport(bytes metadata, bytes report)',
+  reportBodyAbi: '(bytes32 goalId, bool verified, uint8 confidence, bytes32 digest, uint16 bitmap)',
+  encodedReport,
+  note: 'In the CRE host this encodedReport is wrapped by runtime.report(...) into a DON-signed report, then EVMClient.writeReport forwards it through the KeystoneForwarder to HealthVerdict.onReport on Arc.',
 }
 
 // eslint-disable-next-line no-console

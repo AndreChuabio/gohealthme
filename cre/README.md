@@ -1,205 +1,226 @@
-# GoHealthMe — Chainlink CRE workflow
+# GoHealthMe — Chainlink CRE workflow (Confidential AI Attester)
 
-`wf-goal-verification` is a single Chainlink CRE (Chainlink Runtime Environment)
-workflow that judges whether a GoHealthMe user met a health goal, off-chain and
-confidentially, then writes a DON-signed verdict on chain.
+`wf-goal-verification` is a single Chainlink CRE workflow that verifies whether a
+GoHealthMe participant met a health goal, **confidentially** (the analysis runs
+inside a TEE), and writes a DON-signed verdict on chain.
 
-It targets the **base CRE prize via CLI simulation**: no live deployment is
-required for the base track. This directory is a self-contained CRE project built
-from scratch against the public Chainlink CRE docs (docs.chain.link/cre) and the
-official `@chainlink/cre-sdk` type definitions (v1.11.0).
+It follows Chainlink's **official Confidential AI Attester callback architecture**,
+reimplemented for the health-goal domain. Reference (MIT, (c) Chainlink Labs),
+studied and adapted with attribution (see `../AI_ATTRIBUTION.md`):
 
-## What the workflow does
+> Chainlink Confidential AI Attester — Undercollateralized Loan Demo
+> https://github.com/smartcontractkit/chainlink-confidential-ai-attester-demo
+
+No reference source files were copied verbatim. Our contracts, workflow, report
+encoding, and synthetic (no-PHI) documents are GoHealthMe's own.
+
+## Architecture (callback model)
+
+This is NOT an outbound `ConfidentialHTTPClient` call. The app POSTs a health
+document to the Attester with a `cre_callback` URL; the Attester runs inference in
+its TEE and POSTs the verdict back to that URL — which IS this workflow's
+HTTP-trigger endpoint.
 
 ```
-HTTP trigger (signed POST)                          [trigger]
-  payload = derived health summaries (NO raw wearable data)
-        |
-        v
-  computeGoalId(poolId, user) = keccak256(abi.encode(poolId, user))   [matches HealthVerdict.computeGoalId]
-        |
-        v
-  judge the goal:
-    - simulation: deterministic mock judge (inline OR local HTTP stub)
-    - production: ConfidentialHTTPClient -> LLM/scoring endpoint
-                  (summaries encrypted to the enclave; DON operators never see them)
-    -> { verified, confidence: low|medium|high, multiplierBps }
-        |
-        v
-  digest  = keccak256(judge response)        [never the inputs]
-  bitmap  = FACET_AI_ATTESTED (bit2) | FACET_WEARABLE (bit0) = 0x5
-        |
-        v
-  encodeFunctionData(HealthVerdict.recordVerdict(goalId, verified, confidence, digest, bitmap))
-        |
-        v
-  runtime.report(...)            -> DON-signed report over the encoded call   [step 1]
-        |
-        v
-  EVMClient.writeReport(...)      -> DON forwards the report to HealthVerdict  [step 2]
+  GoHealthMe app / cre/scripts/call-attester.mjs
+      |  POST /v1/inference  (synthetic health summary + cre_callback = CRE trigger URL)
+      v
+  Chainlink Confidential AI Attester   (LLM inside a TEE)
+      |  decides verified/declined, signs request+response digests,
+      |  POSTs the verdict to cre_callback
+      v
+  CRE workflow  (wf-goal-verification/main.ts)
+      1. HTTP trigger receives the callback body (payload.input bytes)
+      2. status !== "completed"  -> log + return early
+      3. parse the verdict JSON from `output` (strip the ```json fence)
+            -> { verified, confidence, reason, metric_value, threshold }
+      4. digest = resources[0].response_digest        (TEE transcript hash)
+      5. goalId = keccak256(abi.encode(poolId, user)) [matches HealthVerdict.computeGoalId]
+      6. encodeAbiParameters(bytes32 goalId, bool verified, uint8 confidence,
+                             bytes32 digest, uint16 bitmap)
+      7. runtime.report(...)  ->  EVMClient.writeReport(...)
+      |  signed report, delivered via the KeystoneForwarder
+      v
+  contracts/src/HealthVerdict.sol :: onReport(bytes metadata, bytes report)  [onlyForwarder]
+      • abi.decode(report) -> (goalId, verified, confidence, digest, bitmap)
+      • records the verdict (same storage as recordVerdict)
+      v
+  HealthPools.settle() consults HealthVerdict.canSettle(goalId)
 ```
 
-Receiver: `HealthVerdict.recordVerdict(bytes32 goalId, bool verified, uint8 confidence, bytes32 digest, uint16 bitmap)`
-(see `../contracts/src/HealthVerdict.sol`). The 4-byte selector `0xaf35f456` and the
-`computeGoalId` encoding are both verified against that contract.
+### The on-chain interface (exact match with the workflow)
+
+`HealthVerdict.onReport` is the Chainlink CRE / KeystoneForwarder receiver:
+
+```solidity
+function onReport(bytes calldata metadata, bytes calldata report) external onlyForwarder {
+    (bytes32 goalId, bool verified, uint8 confidence, bytes32 digest, uint16 bitmap) =
+        abi.decode(report, (bytes32, bool, uint8, bytes32, uint16));
+    // ... one-shot record into the same storage as recordVerdict ...
+}
+```
+
+The workflow encodes the report body with the identical tuple order/types:
+
+```ts
+const REPORT_ABI = [
+  { name: 'goalId',     type: 'bytes32' },
+  { name: 'verified',   type: 'bool'    },
+  { name: 'confidence', type: 'uint8'   },
+  { name: 'digest',     type: 'bytes32' },
+  { name: 'bitmap',     type: 'uint16'  },
+] as const
+const encodedReport = encodeAbiParameters(REPORT_ABI, [goalId, verified, confU8, digest, bitmap])
+```
+
+This off-chain → on-chain contract is pinned by the Foundry test
+`test_onReport_decodesWorkflowEncodedReport`, which feeds the *exact* hex the
+workflow's dry-run produces back through `onReport` and asserts the decoded
+verdict. `computeGoalId` matches `HealthVerdict.computeGoalId`
+(`keccak256(abi.encode(poolId, participant))`).
+
+### Two ingestion paths (both into the same storage)
+
+1. `recordVerdict(...)` — the **attester-EOA path** (a relayer that holds the
+   `attester` role). Kept for backward compatibility and non-CRE flows.
+2. `onReport(metadata, report)` — the **Chainlink CRE / KeystoneForwarder path**
+   (`onlyForwarder`). The forwarder defaults to `address(0)` (disabled) until the
+   owner calls `setForwarder(...)` with the real Forwarder on the target chain (or
+   a mock forwarder in tests).
 
 ## Privacy design
 
-This is the reason CRE is the right tool here, not a plain server:
-
-1. **Only derived summaries leave the app.** The HTTP payload is
-   `{ poolId, user, goalSpec, baselineWeekAvg, currentWindowAvg, streakDays }` —
-   week averages and a streak count, never raw wearable samples.
-2. **The confidential HTTP call hides the summaries from DON operators.** In
-   production the scoring call goes through `ConfidentialHTTPClient`; the request
-   body and the `Authorization` secret (`{{.judgeApiKey}}`, sourced from the
-   Vault DON) are encrypted to the scoring enclave. Individual DON node operators
-   running the workflow never observe the user's health data.
+1. **The raw health doc is analysed inside the Attester's TEE.** The DON never
+   sees raw wearable samples; the app sends the doc to the Attester, not to the
+   workflow.
+2. **The workflow only ever sees the structured verdict + signed digests** in the
+   callback body.
 3. **Nothing sensitive lands on chain.** `HealthVerdict` stores only
-   `{ verified, confidence, keccak(judge response), facet bitmap, attester, timestamp }`.
-   The inputs and the raw judge response are never written on chain. This mirrors
-   the invariant stated in `HealthVerdict.sol`.
+   `{ verified, confidence, keccak(transcript digest), facet bitmap, attester, timestamp }`.
 
 ## Project layout
 
 ```
 cre/
-  project.yaml                     # CRE project settings (targets, rpcs) — canonical schema
-  package.json / tsconfig.json     # TS toolchain (typecheck + dry-run)
+  project.yaml                          # CRE project settings (targets, rpcs)
+  package.json / tsconfig.json          # TS toolchain (typecheck + dry-run + call-attester)
   wf-goal-verification/
-    workflow.yaml                  # workflow settings (user-workflow, workflow-artifacts)
-    main.ts                        # the workflow (HTTP trigger -> confidential judge -> DON write)
-    config.json                    # owner, judge URL/secret, receiver, chain selector, authorizedKeys
-    package.json                   # workflow deps for the cre/bun compile step
-  config note: useMockJudge=true keeps simulation credential-free
-  mock-judge/server.mjs            # local HTTP stub judge (deterministic; for the confidential path)
-  payloads/goal-verification.json  # sample HTTP trigger payload
-  src/dry-run.ts                   # standalone deterministic harness (no CRE host needed)
-  sim-output/                      # captured outputs
+    workflow.yaml                       # workflow settings (no secrets-path: callback model)
+    main.ts                             # the workflow (Attester callback -> onReport via forwarder)
+    config.json                         # poolId, user, receiver, chain selector, authorizedKeys
+    package.json                        # workflow deps for the cre/bun compile step
+  scripts/call-attester.mjs             # app-side: POST a health doc to the Attester w/ cre_callback
+  simulation/
+    callback-payload.json               # recorded Attester callback (offline simulation input)
+    health-summary.txt                  # synthetic, no-PHI weekly health summary
+    inference-prompt.txt                # the exact /v1/inference prompt
+  src/dry-run.ts                        # deterministic offline harness (no CRE host needed)
+  sim-output/                           # captured outputs + BLOCKER.md
 ```
-
-### Mock judge: which is which
-
-- **Inline mock** (`mockJudge` in `main.ts`, used when `config.useMockJudge=true`):
-  a pure function of the summaries. No network, no credentials. This is what the
-  CLI simulation exercises by default.
-- **HTTP stub** (`mock-judge/server.mjs`): the same scoring rule exposed as a
-  real `POST /judge` endpoint on `localhost:8787`. Set `config.useMockJudge=false`
-  and `config.judgeUrl=http://localhost:8787/judge` to exercise the actual
-  `ConfidentialHTTPClient` code path locally.
-- **Production judge**: any LLM/scoring endpoint returning
-  `{ verified, confidence, multiplierBps }`; the API key is a Vault DON secret.
-
-Scoring rule (identical in all three): improvement vs baseline AND streak >= 5
-days -> `high`; improvement OR streak >= 3 -> `medium`; otherwise `low`/not verified.
 
 ## How to simulate
 
 ### Prerequisites
 
 ```bash
-# CRE CLI (installs to ~/.cre/bin and adds it to PATH)
-curl -sSL https://app.chain.link/cre/install.sh | bash
-cre version            # expect v1.20.0+
-
-# Bun is required to compile TypeScript workflows to WASM
-curl -fsSL https://bun.sh/install | bash
-bun --version          # expect 1.0.0+
+~/.cre/bin/cre version     # v1.20.0 here
+~/.bun/bin/bun --version   # 1.3.x here
+cd cre && bun install
 ```
 
-### Run the simulation
+### Scenario 1 — offline simulation (recorded callback)
+
+Run from `cre/`, with env loaded from the repo `.env`:
 
 ```bash
-cd cre
-npm install            # or: bun install
-cre login              # opens a browser; OR: export CRE_API_KEY=<key from app.chain.link>
-
+set -a; source ../.env; set +a
 cre workflow simulate ./wf-goal-verification \
-  --target local-simulation \
   --non-interactive --trigger-index 0 \
-  --http-payload @./payloads/goal-verification.json
+  --http-payload ./simulation/callback-payload.json \
+  --broadcast
 ```
 
-The simulator compiles `main.ts` to WASM (via Bun), feeds the payload to the HTTP
-trigger, runs the callback, and reports the DON-signed report and the encoded
-`recordVerdict` call. With `useMockJudge=true` it needs no external credentials.
+> **Known blocker on this machine:** CRE CLI **v1.20.0** requires a Chainlink
+> login *before* it will simulate (even offline with `--http-payload`). The
+> official demo was verified on v1.19.0 where local simulation needed no login.
+> Exact message and full diagnosis: `sim-output/BLOCKER.md` and
+> `sim-output/cre-simulate-broadcast.log`. To unblock: run `cre login` once
+> (browser flow) **or** set `CRE_API_KEY` in `../.env`, then re-run; **or**
+> downgrade the CLI to v1.19.0.
 
-### Deterministic dry-run (no CRE host, no auth)
+### Scenario 2 — live end-to-end (Attester -> local trigger)
 
-The CRE CLI requires a Chainlink account login even to simulate (see Blockers).
-`src/dry-run.ts` reproduces the deterministic core of the workflow — goalId, mock
-judge tiering, digest, facet bitmap, and the exact ABI-encoded `recordVerdict`
-call — using only viem, so the pipeline is verifiable in plain Node:
+Needs ngrok (or cloudflared) to expose the local trigger to the remote Attester.
+
+```bash
+# terminal 1 — start the workflow's local HTTP-trigger server (no --http-payload)
+set -a; source ../.env; set +a
+cre workflow simulate ./wf-goal-verification --broadcast
+#   -> "listening on http://localhost:2000/trigger"
+
+# terminal 2 — expose port 2000
+ngrok http 2000            # -> https://<id>.ngrok-free.dev
+
+# terminal 3 — POST a synthetic health doc to the Attester with that callback URL
+set -a; source ../.env; set +a
+node scripts/call-attester.mjs "https://<id>.ngrok-free.dev/trigger"
+```
+
+The Attester runs inference in its TEE and POSTs the verdict to the ngrok tunnel
+-> the local trigger -> the workflow encodes it and (with `--broadcast` + a real
+receiver) writes through `HealthVerdict.onReport`.
+
+### Deterministic dry-run (no CRE host, no auth, no network)
 
 ```bash
 cd cre
-npx tsx src/dry-run.ts                  # uses payloads/goal-verification.json
-# captured output: sim-output/dry-run.json
+bun run dry-run            # uses simulation/callback-payload.json
+#   captured: sim-output/dry-run.json
 ```
 
-## What works in simulation vs what needs the Chainlink booth (Saturday)
+This reproduces the workflow's deterministic core (parse callback, derive verdict
++ digest, compute goalId, ABI-encode the `onReport` report body) with viem only.
 
-### Verified locally (works now)
+## What works now vs. what needs the booth
 
-- Workflow typechecks clean against `@chainlink/cre-sdk@1.11.0` (`npm run typecheck`).
-- Workflow bundles cleanly with Bun (`bun build ./wf-goal-verification/main.ts`):
-  482 modules, all SDK + viem imports resolve — the code the CLI would compile is sound.
-- Deterministic dry-run produces the correct goalId, verdict, digest, bitmap, and
-  the exact `recordVerdict` calldata. `recordVerdict` selector `0xaf35f456` and
-  `computeGoalId` encoding both match `HealthVerdict.sol`.
-- Mock judge (inline and HTTP stub) returns identical, reproducible verdicts.
-- CRE CLI v1.20.0 and Bun 1.3.x installed and working.
+### Verified locally
+
+- Workflow typechecks clean against `@chainlink/cre-sdk@1.11.0`.
+- Dry-run produces the correct goalId, verdict, digest, bitmap, and the exact
+  `onReport` report body.
+- The encoded report body decodes correctly on chain — pinned by
+  `test_onReport_decodesWorkflowEncodedReport` (Foundry). Full contract suite: 62
+  tests passing (51 pre-existing + 11 new for the forwarder / onReport path).
 
 ### Blocked / needs credentials
 
-- **`cre workflow simulate` requires authentication.** CLI v1.20.0 refuses to
-  simulate (or even `cre init`) without `cre login` (interactive browser) or
-  `CRE_API_KEY` from app.chain.link. The exact error is captured in
-  `sim-output/cre-simulate-final.log`:
-
-  ```
-  ✗ Authentication required: not logged in and no CRE_API_KEY set
-  ```
-
-  Resolution: run `cre login` with a Chainlink account, then re-run the command
-  above. Everything else is in place.
+- **`cre workflow simulate` requires authentication on CLI v1.20.0.** See
+  `sim-output/BLOCKER.md`.
 
 ### Needs the Chainlink booth for a LIVE DON write
 
-A live on-chain write (vs. the simulated report) needs information the public docs
-did not fully specify (the live receiver/forwarder interface page 404'd):
-
-1. **Forwarder address on Arc.** `EVMClient.writeReport` forwards the DON-signed
-   report through a CRE Forwarder contract on the target chain; `HealthVerdict`
-   must trust that Forwarder as its `attester` (or sit behind a receiver that
-   verifies the report). Confirm the Forwarder address the DON uses on Arc.
-   `cre workflow supported-chains` lists the mock forwarder addresses per tenant —
-   confirm Arc is registered.
-2. **Chain selector / chain-name for Arc.** `project.yaml` currently uses
-   `chain-name: arc-testnet`; `config.json` uses `chainSelector: "5042002"`
-   (Arc chain id). Confirm the chain-name registered in Chainlink's
-   chain-selectors registry and the matching CCIP-style selector the DON expects
-   (may differ from the raw chain id; use `--allow-unknown-chains` if Arc is
+1. **KeystoneForwarder address on Arc.** `EVMClient.writeReport` forwards the
+   DON-signed report through the KeystoneForwarder, which calls `onReport`.
+   `HealthVerdict.setForwarder(<arc-forwarder>)` must point at it (use the
+   mock-forwarder address when writing with `--broadcast`, the production
+   Forwarder for a real DON). Confirm the Arc forwarder address at the booth.
+2. **Chain selector / chain-name for Arc.** `project.yaml` uses
+   `chain-name: arc-testnet`; `config.json` uses `chainSelector: "5042002"`.
+   Confirm the chain-name registered in Chainlink's chain-selectors registry and
+   the matching selector the DON expects (use `--allow-unknown-chains` if Arc is
    experimental).
-3. **Attester wiring.** `HealthVerdict` is deployed with a single `attester`
-   address. For live DON writes set `attester` to the Forwarder (or the DON
-   write address) via `setAttester(...)`. Until then, leave
-   `config.healthVerdictAddress` as the zero address: the workflow then produces
-   the signed report and skips `writeReport`, so simulation still completes.
-4. **Vault DON secret provisioning.** For the production confidential judge,
-   provision `judgeApiKey` (and, if encrypting responses,
-   `san_marino_aes_gcm_encryption_key`) in the Vault DON owned by
-   `config.owner`. Not needed for the mock simulation.
+3. **Receiver wiring.** Deploy `HealthVerdict`, call `setForwarder(...)`, and set
+   `config.healthVerdictAddress` to the deployment. Until then leave it as the
+   zero address: the workflow produces the signed report and skips `writeReport`,
+   so simulation still completes.
 
 ## Config reference (`wf-goal-verification/config.json`)
 
 | key | meaning |
 |---|---|
-| `owner` | Vault DON secret owner + config owner |
-| `judgeUrl` | scoring endpoint (mock stub in sim, LLM in prod) |
-| `judgeSecretName` | Vault DON secret name, referenced in the request as `{{.name}}` |
-| `useMockJudge` | `true` = inline deterministic judge (credential-free sim); `false` = confidential HTTP call |
-| `healthVerdictAddress` | receiver; zero address = report-only (HealthVerdict not yet deployed) |
+| `poolId` | pool the goal belongs to; part of the deterministic goalId |
+| `user` | participant address; part of the deterministic goalId |
+| `healthVerdictAddress` | receiver; zero address = report-only (not yet deployed) |
 | `chainSelector` | receiver chain selector (Arc) |
 | `writeGasLimit` | gas limit for the `writeReport` forward |
-| `authorizedKeys` | ECDSA public keys allowed to sign incoming HTTP trigger requests |
+| `authorizedKeys` | ECDSA keys allowed to sign incoming HTTP trigger requests (empty = accept any, for simulation) |

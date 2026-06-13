@@ -16,7 +16,24 @@ pragma solidity ^0.8.24;
 /// attester reverts). The owner can force an override via overrideVerdict() to
 /// recover from a bad attestation; overrides emit a distinct event so the audit
 /// trail shows the correction explicitly.
-contract HealthVerdict {
+///
+/// Two ingestion paths, both landing in the same verdict storage:
+///   1. recordVerdict(...) — the attester-EOA path. A relayer that holds the
+///      attester role submits the Confidential AI result directly. Kept for
+///      backward compatibility and for non-CRE flows.
+///   2. onReport(metadata, report) — the Chainlink CRE / KeystoneForwarder path.
+///      The CRE wf-goal-verification workflow ABI-encodes the verdict, wraps it
+///      in a DON-signed report, and the KeystoneForwarder calls onReport here.
+///      Only the configured forwarder may call it. This is the IReceiver
+///      interface the forwarder expects.
+
+/// @notice Minimal CRE receiver interface. The KeystoneForwarder calls
+///         `onReport` with workflow metadata and the ABI-encoded report.
+interface IReceiver {
+    function onReport(bytes calldata metadata, bytes calldata report) external;
+}
+
+contract HealthVerdict is IReceiver {
     // ----------------------------------------------------------- confidence
 
     /// Confidence tiers. canSettle() requires anything above LOW.
@@ -56,6 +73,7 @@ contract HealthVerdict {
 
     address public owner;
     address public attester; // the only address allowed to recordVerdict
+    address public forwarder; // the only address allowed to call onReport (CRE KeystoneForwarder)
     mapping(bytes32 => Verdict) internal verdicts;
     mapping(bytes32 => bool) public recorded; // true once a goalId has any verdict
 
@@ -63,6 +81,7 @@ contract HealthVerdict {
 
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
     event AttesterUpdated(address indexed previousAttester, address indexed newAttester);
+    event ForwarderUpdated(address indexed previousForwarder, address indexed newForwarder);
     event VerdictRecorded(
         bytes32 indexed goalId,
         bool verified,
@@ -92,6 +111,11 @@ contract HealthVerdict {
         _;
     }
 
+    modifier onlyForwarder() {
+        require(msg.sender == forwarder, "NOT_FORWARDER");
+        _;
+    }
+
     // -------------------------------------------------------- constructor
 
     /// @param attester_ the address allowed to record verdicts (the relayer that
@@ -110,6 +134,16 @@ contract HealthVerdict {
         require(newAttester != address(0), "ZERO_ATTESTER");
         emit AttesterUpdated(attester, newAttester);
         attester = newAttester;
+    }
+
+    /// @notice Set the trusted CRE KeystoneForwarder allowed to call onReport.
+    ///         Defaults to the zero address (the onReport path is disabled until
+    ///         the owner points it at the real Forwarder on the target chain, or
+    ///         a mock forwarder in tests).
+    function setForwarder(address newForwarder) external onlyOwner {
+        require(newForwarder != address(0), "ZERO_FORWARDER");
+        emit ForwarderUpdated(forwarder, newForwarder);
+        forwarder = newForwarder;
     }
 
     function transferOwnership(address newOwner) external onlyOwner {
@@ -134,6 +168,40 @@ contract HealthVerdict {
         bytes32 digest,
         uint16 bitmap
     ) external onlyAttester {
+        require(!recorded[goalId], "ALREADY_RECORDED");
+        require(confidence <= CONFIDENCE_HIGH, "BAD_CONFIDENCE");
+        require(bitmap & ~FACET_MASK == 0, "BAD_BITMAP");
+
+        recorded[goalId] = true;
+        verdicts[goalId] = Verdict({
+            verified: verified,
+            confidence: confidence,
+            digest: digest,
+            attester: msg.sender,
+            timestamp: uint64(block.timestamp),
+            bitmap: bitmap
+        });
+
+        emit VerdictRecorded(goalId, verified, confidence, digest, msg.sender, bitmap);
+    }
+
+    /// @notice CRE / KeystoneForwarder ingestion path. The wf-goal-verification
+    ///         workflow ABI-encodes the verdict and wraps it in a DON-signed
+    ///         report; the KeystoneForwarder delivers it here.
+    ///
+    /// @dev The forwarder calls onReport(metadata, report). `metadata` carries
+    ///      the workflow id / DON id and is unused in this minimal receiver. The
+    ///      `report` body must decode to the exact tuple the workflow encodes:
+    ///        abi.encode(bytes32 goalId, bool verified, uint8 confidence,
+    ///                   bytes32 digest, uint16 bitmap)
+    ///      One-shot, same as recordVerdict: a goalId that already has a verdict
+    ///      reverts (use overrideVerdict to correct one). The recorded verdict's
+    ///      `attester` field is set to the forwarder for an explicit audit trail
+    ///      of the CRE-delivered record.
+    function onReport(bytes calldata, bytes calldata report) external onlyForwarder {
+        (bytes32 goalId, bool verified, uint8 confidence, bytes32 digest, uint16 bitmap) =
+            abi.decode(report, (bytes32, bool, uint8, bytes32, uint16));
+
         require(!recorded[goalId], "ALREADY_RECORDED");
         require(confidence <= CONFIDENCE_HIGH, "BAD_CONFIDENCE");
         require(bitmap & ~FACET_MASK == 0, "BAD_BITMAP");

@@ -4,6 +4,18 @@ pragma solidity ^0.8.24;
 import {Test} from "forge-std/Test.sol";
 import {HealthVerdict} from "../src/HealthVerdict.sol";
 
+/// @dev Stand-in for the Chainlink KeystoneForwarder. In production the real
+///      Forwarder verifies the DON signatures over the report and then calls
+///      receiver.onReport(metadata, report). For tests we only need the final
+///      hop — an authorized caller forwarding the already-encoded report — so
+///      this mock just relays the call, mirroring how `cre ... simulate
+///      --broadcast` writes through the MockKeystoneForwarder.
+contract MockKeystoneForwarder {
+    function forward(address receiver, bytes calldata metadata, bytes calldata report) external {
+        HealthVerdict(receiver).onReport(metadata, report);
+    }
+}
+
 contract HealthVerdictTest is Test {
     HealthVerdict internal reg;
 
@@ -190,5 +202,160 @@ contract HealthVerdictTest is Test {
         uint256 poolId = 7;
         address participant = makeAddr("participant");
         assertEq(reg.computeGoalId(poolId, participant), keccak256(abi.encode(poolId, participant)));
+    }
+
+    // ------------------------------------------------ CRE onReport path
+
+    /// Encode the report body exactly as the wf-goal-verification workflow does:
+    ///   abi.encode(bytes32 goalId, bool verified, uint8 confidence, bytes32 digest, uint16 bitmap)
+    function _encodeReport(bytes32 goalId_, bool verified, uint8 confidence, bytes32 digest_, uint16 bitmap)
+        internal
+        pure
+        returns (bytes memory)
+    {
+        return abi.encode(goalId_, verified, confidence, digest_, bitmap);
+    }
+
+    function test_setForwarder_onlyOwnerAndUpdates() public {
+        assertEq(reg.forwarder(), address(0)); // disabled by default
+
+        vm.prank(rando);
+        vm.expectRevert(bytes("NOT_OWNER"));
+        reg.setForwarder(rando);
+
+        reg.setForwarder(rando); // owner is the test contract
+        assertEq(reg.forwarder(), rando);
+    }
+
+    function test_setForwarder_zeroReverts() public {
+        vm.expectRevert(bytes("ZERO_FORWARDER"));
+        reg.setForwarder(address(0));
+    }
+
+    function test_onReport_happyPathThroughForwarder() public {
+        MockKeystoneForwarder fwd = new MockKeystoneForwarder();
+        reg.setForwarder(address(fwd));
+
+        uint16 bitmap = FACET_AI_ATTESTED | FACET_WEARABLE;
+        bytes memory report = _encodeReport(goalId, true, HIGH, digest, bitmap);
+        fwd.forward(address(reg), bytes(""), report);
+
+        HealthVerdict.Verdict memory v = reg.getVerdict(goalId);
+        assertTrue(v.verified);
+        assertEq(v.confidence, HIGH);
+        assertEq(v.digest, digest);
+        assertEq(v.attester, address(fwd)); // recorded as the forwarder
+        assertEq(v.bitmap, bitmap);
+        assertTrue(reg.recorded(goalId));
+        assertTrue(reg.canSettle(goalId));
+    }
+
+    function test_onReport_onlyForwarder() public {
+        MockKeystoneForwarder fwd = new MockKeystoneForwarder();
+        reg.setForwarder(address(fwd));
+
+        bytes memory report = _encodeReport(goalId, true, HIGH, digest, 0);
+
+        // direct call from a random EOA is rejected
+        vm.prank(rando);
+        vm.expectRevert(bytes("NOT_FORWARDER"));
+        reg.onReport(bytes(""), report);
+
+        // even the attester EOA cannot use the forwarder path
+        vm.prank(attester);
+        vm.expectRevert(bytes("NOT_FORWARDER"));
+        reg.onReport(bytes(""), report);
+    }
+
+    function test_onReport_disabledWhenForwarderUnset() public {
+        // forwarder defaults to address(0); no real (non-zero) sender can call.
+        assertEq(reg.forwarder(), address(0));
+        bytes memory report = _encodeReport(goalId, true, HIGH, digest, 0);
+        vm.prank(rando);
+        vm.expectRevert(bytes("NOT_FORWARDER"));
+        reg.onReport(bytes(""), report);
+    }
+
+    function test_onReport_oneShotReverts() public {
+        MockKeystoneForwarder fwd = new MockKeystoneForwarder();
+        reg.setForwarder(address(fwd));
+
+        fwd.forward(address(reg), bytes(""), _encodeReport(goalId, true, HIGH, digest, 0));
+        vm.expectRevert(bytes("ALREADY_RECORDED"));
+        fwd.forward(address(reg), bytes(""), _encodeReport(goalId, false, LOW, digest, 0));
+    }
+
+    function test_onReport_badConfidenceReverts() public {
+        MockKeystoneForwarder fwd = new MockKeystoneForwarder();
+        reg.setForwarder(address(fwd));
+        vm.expectRevert(bytes("BAD_CONFIDENCE"));
+        fwd.forward(address(reg), bytes(""), _encodeReport(goalId, true, 3, digest, 0));
+    }
+
+    function test_onReport_badBitmapReverts() public {
+        MockKeystoneForwarder fwd = new MockKeystoneForwarder();
+        reg.setForwarder(address(fwd));
+        uint16 unknownBit = 1 << 4;
+        vm.expectRevert(bytes("BAD_BITMAP"));
+        fwd.forward(address(reg), bytes(""), _encodeReport(goalId, true, HIGH, digest, unknownBit));
+    }
+
+    /// The override escape hatch still works on a CRE-delivered verdict.
+    function test_onReport_thenOwnerOverride() public {
+        MockKeystoneForwarder fwd = new MockKeystoneForwarder();
+        reg.setForwarder(address(fwd));
+        fwd.forward(address(reg), bytes(""), _encodeReport(goalId, true, HIGH, digest, 0));
+        assertTrue(reg.canSettle(goalId));
+
+        reg.overrideVerdict(goalId, false, LOW, keccak256("corrected"), 0);
+        assertFalse(reg.canSettle(goalId));
+        assertEq(reg.getVerdict(goalId).attester, owner);
+    }
+
+    /// Cross-check: the exact report body the wf-goal-verification workflow
+    /// produces (captured from `bun run dry-run` on simulation/callback-payload.json)
+    /// must decode through onReport into the expected verdict. This pins the
+    /// off-chain encodeAbiParameters output to the on-chain abi.decode shape.
+    function test_onReport_decodesWorkflowEncodedReport() public {
+        MockKeystoneForwarder fwd = new MockKeystoneForwarder();
+        reg.setForwarder(address(fwd));
+
+        // From cre dry-run: goalId for poolId=1, user=0x8ba1...DBA72;
+        // digest = response_digest; verified=true; confidence=HIGH(2); bitmap=5.
+        bytes memory workflowReport =
+            hex"7611f4f43bd80cbc242bf4a6e62d546adbb8eaff465c8fdb0cdeb486648b720a"
+            hex"0000000000000000000000000000000000000000000000000000000000000001"
+            hex"0000000000000000000000000000000000000000000000000000000000000002"
+            hex"0a0124911560a2236e432d30c3e2a90b0666f4c84b40bf10ba01960595c6ecea"
+            hex"0000000000000000000000000000000000000000000000000000000000000005";
+
+        fwd.forward(address(reg), bytes(""), workflowReport);
+
+        bytes32 expectedGoalId = reg.computeGoalId(1, 0x8ba1f109551bD432803012645Ac136ddd64DBA72);
+        assertEq(expectedGoalId, bytes32(uint256(0x7611f4f43bd80cbc242bf4a6e62d546adbb8eaff465c8fdb0cdeb486648b720a)));
+
+        HealthVerdict.Verdict memory v = reg.getVerdict(expectedGoalId);
+        assertTrue(v.verified);
+        assertEq(v.confidence, HIGH);
+        assertEq(v.digest, bytes32(uint256(0x0a0124911560a2236e432d30c3e2a90b0666f4c84b40bf10ba01960595c6ecea)));
+        assertEq(v.bitmap, FACET_AI_ATTESTED | FACET_WEARABLE);
+        assertTrue(reg.canSettle(expectedGoalId));
+    }
+
+    /// recordVerdict (attester EOA path) still works alongside the onReport path.
+    function test_recordVerdict_backwardCompatWithForwarderSet() public {
+        MockKeystoneForwarder fwd = new MockKeystoneForwarder();
+        reg.setForwarder(address(fwd));
+
+        // attester EOA path
+        bytes32 g1 = keccak256("eoa-goal");
+        vm.prank(attester);
+        reg.recordVerdict(g1, true, HIGH, digest, 0);
+        assertEq(reg.getVerdict(g1).attester, attester);
+
+        // forwarder path, distinct goal
+        bytes32 g2 = keccak256("cre-goal");
+        fwd.forward(address(reg), bytes(""), _encodeReport(g2, true, HIGH, digest, 0));
+        assertEq(reg.getVerdict(g2).attester, address(fwd));
     }
 }

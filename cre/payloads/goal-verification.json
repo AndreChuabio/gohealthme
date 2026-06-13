@@ -1,8 +1,0 @@
-{
-  "poolId": 1,
-  "user": "0x8ba1f109551bD432803012645Ac136ddd64DBA72",
-  "goalSpec": "Average >= 8000 steps/day sustained across the current 7-day window",
-  "baselineWeekAvg": 6200,
-  "currentWindowAvg": 8450,
-  "streakDays": 6
-}

@@ -1,29 +1,53 @@
 /**
  * wf-goal-verification — GoHealthMe Chainlink CRE workflow.
  *
- * Trigger:  HTTP (signed POST to the CRE gateway).
- * Purpose:  judge whether a user met a health goal, off-chain and confidentially,
- *           then write a DON-signed verdict to HealthVerdict.recordVerdict on Arc.
+ * Architecture: Chainlink Confidential AI Attester CALLBACK model.
+ * -----------------------------------------------------------------
+ * Reimplemented for HEALTH goals from Chainlink's official, MIT-licensed
+ * Confidential AI Attester demo:
+ *   https://github.com/smartcontractkit/chainlink-confidential-ai-attester-demo
+ * (the undercollateralized-loan reference). See AI_ATTRIBUTION.md and README.md.
+ *
+ *   ┌────────────────────────┐  POST /v1/inference (health doc + cre_callback)  ┌──────────────┐
+ *   │ GoHealthMe app / script │ ───────────────────────────────────────────────▶ │ Confidential │
+ *   │ (uploads a goal summary │                                                  │ AI Attester  │
+ *   │  / synthetic lab doc)   │                                                  │  (TEE)       │
+ *   └────────────────────────┘                                                  └──────┬───────┘
+ *        the Attester runs an LLM INSIDE A TEE, decides whether the health goal      │ callback
+ *        was met, signs request+response digests, and POSTs the verdict to the       │
+ *        cre_callback URL ( = THIS workflow's HTTP-trigger endpoint).                 ▼
+ *   ┌──────────────────────────────────────────────────────────────────────────────────────┐
+ *   │ CRE workflow (this file)                                                                │
+ *   │  1. HTTP trigger receives the callback body (payload.input bytes)                       │
+ *   │  2. status !== "completed"  → log + return early                                        │
+ *   │  3. parse the verdict JSON from `output` (strip the ```json fence)                      │
+ *   │        → { verified, confidence, reason, metric_value, threshold }                      │
+ *   │  4. digest = resources[0].response_digest  (the TEE inference transcript hash)          │
+ *   │  5. goalId = keccak256(abi.encode(poolId, user))   [matches HealthVerdict.computeGoalId]│
+ *   │  6. encodeAbiParameters(bytes32 goalId, bool verified, uint8 confidence,                │
+ *   │                         bytes32 digest, uint16 bitmap)                                  │
+ *   │  7. runtime.report(...) → DON-signed report  →  EVMClient.writeReport(...)              │
+ *   └────────────────────────────────────────────┬───────────────────────────────────────────┘
+ *                                                │ signed report, via the KeystoneForwarder
+ *                                                ▼
+ *   contracts/src/HealthVerdict.sol :: onReport(bytes metadata, bytes report)  [onlyForwarder]
+ *     • abi.decode(report) → (goalId, verified, confidence, digest, bitmap)
+ *     • records the verdict (same storage as recordVerdict); canSettle(goalId) gates HealthPools
  *
  * Privacy invariant
  * -----------------
- * The HTTP payload carries ONLY DERIVED SUMMARIES (week averages, a streak count,
- * a goal spec) — never raw wearable samples. The scoring call is made through the
- * confidential-http capability, so even those summaries are encrypted to the
- * judge endpoint and are not visible to individual DON node operators. On chain we
- * store only { verified, confidence, keccak(judge response), facet bitmap } — the
- * inputs never land on chain. This mirrors HealthVerdict.sol's stated invariant.
+ * The raw health document is analysed INSIDE the Attester's TEE; the app never
+ * sends raw wearable samples to the DON. The callback this workflow receives
+ * carries only the structured verdict and the signed inference digests. On chain
+ * we store only { verified, confidence, keccak(transcript digest), facet bitmap }
+ * — the inputs never land on chain. This mirrors HealthVerdict.sol's invariant.
  *
- * Two-step on-chain write (per CRE EVM client):
- *   1. runtime.report(...)  -> a DON-signed Report over the encoded call data.
- *   2. EVMClient.writeReport(...) -> the DON forwards the report to the receiver.
- *
- * All SDK shapes used here are taken from @chainlink/cre-sdk@1.11.0 type defs.
+ * QuickJS/WASM runtime: no process.env / Buffer / crypto; viem does all ABI
+ * encoding and hashing. SDK shapes are from @chainlink/cre-sdk@1.11.0.
  */
 
 import {
   cre,
-  ok,
   Runner,
   type Runtime,
   type HTTPPayload,
@@ -31,10 +55,8 @@ import {
 } from '@chainlink/cre-sdk'
 import {
   encodeAbiParameters,
-  encodeFunctionData,
   keccak256,
   hexToBytes,
-  stringToHex,
   type Hex,
   type Address,
 } from 'viem'
@@ -46,60 +68,69 @@ interface AuthorizedKeyConfig {
   publicKey: string
 }
 
-/** Shape of config/wf-goal-verification.json. */
+/** Shape of wf-goal-verification/config.json. */
 interface WorkflowConfig {
-  /** Vault secret owner (config-templating + secret ownership). */
-  owner: string
-  /** Endpoint that scores the goal. Local mock for simulation; real LLM in prod. */
-  judgeUrl: string
-  /** Name of the Vault DON secret holding the judge API key (referenced as {{.name}}). */
-  judgeSecretName: string
-  /** When true, simulation uses an inline deterministic judge instead of an HTTP call. */
-  useMockJudge: boolean
+  /** Pool the goal belongs to. Part of the deterministic goalId. */
+  poolId: number
+  /** Participant whose goal is being verified. Part of the deterministic goalId. */
+  user: Address
   /** Receiver contract: HealthVerdict on Arc. Zero address until deployed (see README). */
   healthVerdictAddress: string
   /** Chain selector for the receiver chain (Arc testnet). */
   chainSelector: string
   /** Gas limit for the writeReport forward. */
   writeGasLimit: string
-  /** Public keys allowed to sign incoming HTTP trigger requests. */
+  /** Public keys allowed to sign incoming HTTP trigger requests (the Attester / gateway). */
   authorizedKeys: AuthorizedKeyConfig[]
 }
 
-// ----------------------------------------------------------------- domain types
+// ------------------------------------------------------ attester callback shape
 
-/** Inbound HTTP payload — derived summaries ONLY, never raw wearable data. */
-interface GoalVerificationInput {
-  poolId: number
-  user: Address
-  goalSpec: string
-  baselineWeekAvg: number
-  currentWindowAvg: number
-  streakDays: number
+/**
+ * The Confidential AI Attester callback body (only the fields this workflow uses).
+ * See simulation/callback-payload.json for a recorded example.
+ */
+interface InferenceCallback {
+  id?: string
+  status?: string // "completed" | "failed" | ...
+  output?: string // the LLM verdict as JSON, usually wrapped in a ```json fence
+  resource_summaries?: { digest?: string; filename?: string }[]
+  resources?: { digest?: string; request_digest?: string; response_digest?: string }[]
 }
 
 type Confidence = 'low' | 'medium' | 'high'
 
-/** What the judge (real or mock) returns. */
-interface JudgeVerdict {
-  verified: boolean
-  confidence: Confidence
-  multiplierBps: number
+/**
+ * The structured verdict the Attester LLM is prompted to return for a health
+ * goal. `metric_value` / `threshold` are the observed vs target metric (e.g.
+ * average daily steps); they justify the boolean and feed the demo UI.
+ */
+interface HealthVerdictJson {
+  verified?: boolean
+  confidence?: Confidence | string
+  reason?: string
+  metric_value?: number
+  threshold?: number
 }
 
-/** Result surfaced from the workflow (also what simulation prints). */
+/** Result surfaced from the workflow (also what the simulation prints). */
 interface WorkflowResult {
-  goalId: Hex
-  verified: boolean
-  confidence: Confidence
-  multiplierBps: number
-  digest: Hex
-  bitmap: number
-  receiver: string
-  /** Hex of the ABI-encoded recordVerdict call that the report wraps. */
-  encodedCall: Hex
+  id: string | null
+  status: string | null
+  action?: 'skipped'
+  goalId?: Hex
+  verified?: boolean
+  confidence?: Confidence
+  reason?: string
+  metricValue?: number | null
+  threshold?: number | null
+  digest?: Hex
+  bitmap?: number
+  receiver?: string
+  /** Hex of the ABI-encoded report body wrapped by runtime.report. */
+  encodedReport?: Hex
   /** "live" once a real DON write succeeds; "encoded-only" in simulation. */
-  writeMode: 'live' | 'encoded-only'
+  writeMode?: 'live' | 'encoded-only'
   txStatus?: string
 }
 
@@ -111,49 +142,36 @@ const CONFIDENCE_TO_U8: Record<Confidence, number> = { low: 0, medium: 1, high: 
 const FACET_WEARABLE = 1 << 0 // bit0: wearable data verified
 const FACET_AI_ATTESTED = 1 << 2 // bit2: AI attested
 
-// recordVerdict(bytes32,bool,uint8,bytes32,uint16) — exact HealthVerdict signature.
-const RECORD_VERDICT_ABI = [
-  {
-    type: 'function',
-    name: 'recordVerdict',
-    stateMutability: 'nonpayable',
-    inputs: [
-      { name: 'goalId', type: 'bytes32' },
-      { name: 'verified', type: 'bool' },
-      { name: 'confidence', type: 'uint8' },
-      { name: 'digest', type: 'bytes32' },
-      { name: 'bitmap', type: 'uint16' },
-    ],
-    outputs: [],
-  },
+// Report body ABI — must match HealthVerdict.onReport's abi.decode:
+//   (bytes32 goalId, bool verified, uint8 confidence, bytes32 digest, uint16 bitmap)
+const REPORT_ABI = [
+  { name: 'goalId', type: 'bytes32' },
+  { name: 'verified', type: 'bool' },
+  { name: 'confidence', type: 'uint8' },
+  { name: 'digest', type: 'bytes32' },
+  { name: 'bitmap', type: 'uint16' },
 ] as const
 
 // ----------------------------------------------------------------- helpers
 
-/** Decode the trigger payload bytes into our typed input, with validation. */
-const parseInput = (payload: HTTPPayload): GoalVerificationInput => {
-  const raw = new TextDecoder().decode(payload.input)
-  const obj = JSON.parse(raw) as Partial<GoalVerificationInput>
+/** The LLM output is JSON, often wrapped in a ```json … ``` fence; strip + parse. */
+const parseHealthVerdict = (output: string): HealthVerdictJson => {
+  const fenced = output.trim().match(/^```(?:[a-zA-Z0-9]+)?\s*([\s\S]*?)\s*```$/)
+  const json = fenced?.[1] !== undefined ? fenced[1].trim() : output
+  return JSON.parse(json) as HealthVerdictJson
+}
 
-  if (
-    obj.poolId === undefined ||
-    !obj.user ||
-    !obj.goalSpec ||
-    obj.baselineWeekAvg === undefined ||
-    obj.currentWindowAvg === undefined ||
-    obj.streakDays === undefined
-  ) {
-    throw new Error('invalid payload: expected { poolId, user, goalSpec, baselineWeekAvg, currentWindowAvg, streakDays }')
-  }
+/** Normalize an arbitrary confidence string to the strict tier. */
+const normalizeConfidence = (c: unknown): Confidence =>
+  c === 'high' || c === 'medium' ? c : 'low'
 
-  return {
-    poolId: Number(obj.poolId),
-    user: obj.user as Address,
-    goalSpec: String(obj.goalSpec),
-    baselineWeekAvg: Number(obj.baselineWeekAvg),
-    currentWindowAvg: Number(obj.currentWindowAvg),
-    streakDays: Number(obj.streakDays),
+/** Normalize a 32-byte hex digest (with or without 0x) to a bytes32 value. */
+const toBytes32 = (hex: string): Hex => {
+  const h = hex.replace(/^0[xX]/, '')
+  if (h.length !== 64 || !/^[0-9a-fA-F]+$/.test(h)) {
+    throw new Error(`expected a 32-byte hex digest, got "${hex}"`)
   }
+  return `0x${h.toLowerCase()}` as Hex
 }
 
 /**
@@ -171,142 +189,93 @@ const computeGoalId = (poolId: number, user: Address): Hex =>
     ),
   )
 
-/**
- * Deterministic local mock judge. Used ONLY in simulation (config.useMockJudge).
- * Pure function of the derived summaries — no network, no credentials. Tier:
- *   - improvement vs baseline AND a streak of >= 5 days  -> high
- *   - improvement OR a streak of >= 3 days               -> medium
- *   - otherwise                                          -> low (not verified)
- */
-const mockJudge = (input: GoalVerificationInput): JudgeVerdict => {
-  const improved = input.currentWindowAvg > input.baselineWeekAvg
-  const gain = input.baselineWeekAvg > 0
-    ? (input.currentWindowAvg - input.baselineWeekAvg) / input.baselineWeekAvg
-    : 0
+// ----------------------------------------------- HTTP trigger handler (callback)
 
-  if (improved && input.streakDays >= 5) {
-    return { verified: true, confidence: 'high', multiplierBps: 12_000 + Math.round(gain * 5_000) }
-  }
-  if (improved || input.streakDays >= 3) {
-    return { verified: true, confidence: 'medium', multiplierBps: 10_500 }
-  }
-  return { verified: false, confidence: 'low', multiplierBps: 0 }
-}
-
-/** Coerce an arbitrary judge response into a strict JudgeVerdict. */
-const normalizeVerdict = (raw: unknown): JudgeVerdict => {
-  const v = raw as Partial<JudgeVerdict>
-  const confidence: Confidence =
-    v.confidence === 'high' || v.confidence === 'medium' ? v.confidence : 'low'
-  return {
-    verified: Boolean(v.verified),
-    confidence,
-    multiplierBps: Number.isFinite(Number(v.multiplierBps)) ? Number(v.multiplierBps) : 0,
-  }
-}
-
-// ----------------------------------------------------------------- callback
-
-const onGoalVerification = async (
+const onInferenceCallback = (
   runtime: Runtime<WorkflowConfig>,
   payload: HTTPPayload,
-): Promise<WorkflowResult> => {
+): string => {
   const cfg = runtime.config
-  const input = parseInput(payload)
 
-  // 1) Goal id, shared with the on-chain contract.
-  const goalId = computeGoalId(input.poolId, input.user)
+  // 1) Decode the HTTP body bytes into the Attester callback object.
+  const callback = JSON.parse(new TextDecoder().decode(payload.input)) as InferenceCallback
+  runtime.log(
+    `Inference callback received: id=${callback.id ?? 'unknown'} status=${callback.status ?? 'unknown'}`,
+  )
 
-  // 2) Score the goal. Confidential HTTP keeps the summaries off the DON
-  //    operators' view; the mock path keeps simulation credential-free.
-  let verdict: JudgeVerdict
-  if (cfg.useMockJudge) {
-    verdict = mockJudge(input)
-  } else {
-    const client = new cre.capabilities.ConfidentialHTTPClient()
-    const response = client
-      .sendRequest(runtime, {
-        request: {
-          url: cfg.judgeUrl,
-          method: 'POST',
-          // Authorization is filled from a Vault DON secret; the value never
-          // appears in the workflow code or logs. The summaries in the body are
-          // encrypted to the enclave, so DON operators never see them either.
-          multiHeaders: {
-            Authorization: { values: [`Bearer {{.${cfg.judgeSecretName}}}`] },
-            'Content-Type': { values: ['application/json'] },
-          },
-          bodyString: JSON.stringify({
-            goalSpec: input.goalSpec,
-            baselineWeekAvg: input.baselineWeekAvg,
-            currentWindowAvg: input.currentWindowAvg,
-            streakDays: input.streakDays,
-          }),
-        },
-        vaultDonSecrets: [{ key: cfg.judgeSecretName, owner: cfg.owner }],
-      })
-      .result()
-
-    if (!ok(response)) {
-      throw new Error(`judge request failed: status ${response.statusCode}`)
-    }
-    const body = new TextDecoder().decode(response.body)
-    verdict = normalizeVerdict(JSON.parse(body))
+  // 2) Only act on completed inferences.
+  if (callback.status !== 'completed') {
+    runtime.log(`Status is not "completed"; skipping on-chain write.`)
+    return JSON.stringify({ id: callback.id ?? null, status: callback.status ?? null, action: 'skipped' })
   }
 
+  // 3) Parse the structured health verdict from the (fenced) output JSON.
+  const v = parseHealthVerdict(callback.output ?? '')
+  const verified = v.verified === true
+  const confidence = normalizeConfidence(v.confidence)
+  const reason = v.reason ?? ''
   runtime.log(
-    `verdict for goal ${goalId}: verified=${verdict.verified} confidence=${verdict.confidence}`,
+    `Health verdict: verified=${verified} confidence=${confidence} metric=${v.metric_value ?? 'n/a'} threshold=${v.threshold ?? 'n/a'}`,
   )
 
-  // 3) digest = keccak of the (canonicalized) judge response. Never the inputs.
-  const digest = keccak256(
-    stringToHex(
-      JSON.stringify({
-        verified: verdict.verified,
-        confidence: verdict.confidence,
-        multiplierBps: verdict.multiplierBps,
-      }),
-    ),
-  )
+  // 4) digest = the TEE inference response digest (fall back to document digest).
+  const responseDigest = callback.resources?.[0]?.response_digest
+  const documentDigest = callback.resources?.[0]?.digest ?? callback.resource_summaries?.[0]?.digest
+  const digestSource = responseDigest ?? documentDigest
+  if (!digestSource) {
+    throw new Error('callback missing response_digest and document digest; cannot attest')
+  }
+  const digest = toBytes32(digestSource)
 
-  // 4) Facet bitmap for the demo: AI attested (bit2) + wearable (bit0).
+  // 5) Deterministic goalId, shared with HealthVerdict on chain.
+  const goalId = computeGoalId(cfg.poolId, cfg.user)
+  runtime.log(`goalId=${goalId} digest=${digest}`)
+
+  // 6) Facet bitmap for the demo: AI attested (bit2) + wearable (bit0).
   const bitmap = FACET_AI_ATTESTED | FACET_WEARABLE
 
-  // 5) Encode the receiver call exactly to HealthVerdict.recordVerdict.
-  const encodedCall = encodeFunctionData({
-    abi: RECORD_VERDICT_ABI,
-    functionName: 'recordVerdict',
-    args: [goalId, verdict.verified, CONFIDENCE_TO_U8[verdict.confidence], digest, bitmap],
-  })
+  // 7) ABI-encode the report body exactly as HealthVerdict.onReport decodes it.
+  const encodedReport = encodeAbiParameters(REPORT_ABI, [
+    goalId,
+    verified,
+    CONFIDENCE_TO_U8[confidence],
+    digest,
+    bitmap,
+  ])
 
-  // 6) DON-signed report over the encoded call data.
+  const base: WorkflowResult = {
+    id: callback.id ?? null,
+    status: callback.status,
+    goalId,
+    verified,
+    confidence,
+    reason,
+    metricValue: v.metric_value ?? null,
+    threshold: v.threshold ?? null,
+    digest,
+    bitmap,
+    receiver: cfg.healthVerdictAddress,
+    encodedReport,
+    writeMode: 'encoded-only',
+  }
+
+  // 8) DON-signed report over the encoded body, then forward to HealthVerdict
+  //    via the EVM client (the DON delivers it through the KeystoneForwarder,
+  //    which calls onReport). Skipped when the receiver is unset so simulation
+  //    still produces the full signed report for inspection.
   const report = runtime
     .report({
-      encodedPayload: hexToBase64(encodedCall),
+      encodedPayload: hexToBase64(encodedReport),
       encoderName: 'evm',
       signingAlgo: 'ecdsa',
       hashingAlgo: 'keccak256',
     })
     .result()
 
-  const base: WorkflowResult = {
-    goalId,
-    verified: verdict.verified,
-    confidence: verdict.confidence,
-    multiplierBps: verdict.multiplierBps,
-    digest,
-    bitmap,
-    receiver: cfg.healthVerdictAddress,
-    encodedCall,
-    writeMode: 'encoded-only',
-  }
-
-  // 7) Forward the report to HealthVerdict.recordVerdict via the EVM client.
-  //    Skipped when the receiver is unset (HealthVerdict not yet deployed) so
-  //    simulation still produces the full signed report for inspection.
   const receiverUnset = /^0x0{40}$/i.test(cfg.healthVerdictAddress)
   if (receiverUnset) {
-    return base
+    runtime.log('healthVerdictAddress unset; returning encoded-only report (no on-chain write).')
+    return JSON.stringify(base)
   }
 
   const evm = new cre.capabilities.EVMClient(BigInt(cfg.chainSelector))
@@ -318,23 +287,20 @@ const onGoalVerification = async (
     })
     .result()
 
-  return {
+  runtime.log(`On-chain write: txStatus=${String(writeResult.txStatus ?? 'n/a')}`)
+  return JSON.stringify({
     ...base,
     writeMode: 'live',
     txStatus: writeResult.txStatus !== undefined ? String(writeResult.txStatus) : undefined,
-  }
+  })
 }
 
 // ----------------------------------------------------------------- wiring
 
-/**
- * initWorkflow binds the HTTP trigger to the callback. authorizedKeys gate which
- * signed requests the gateway accepts.
- */
 const initWorkflow = (config: WorkflowConfig) => {
   const http = new cre.capabilities.HTTPCapability()
   const trigger = http.trigger({ authorizedKeys: config.authorizedKeys })
-  return [cre.handler(trigger, onGoalVerification)]
+  return [cre.handler(trigger, onInferenceCallback)]
 }
 
 export async function main(): Promise<void> {
@@ -344,5 +310,14 @@ export async function main(): Promise<void> {
 
 main()
 
-// Exported for unit/local testing without the CRE runtime.
-export { computeGoalId, mockJudge, normalizeVerdict, FACET_AI_ATTESTED, FACET_WEARABLE }
+// Exported for the deterministic offline dry-run (no CRE runtime needed).
+export {
+  computeGoalId,
+  parseHealthVerdict,
+  normalizeConfidence,
+  toBytes32,
+  CONFIDENCE_TO_U8,
+  FACET_AI_ATTESTED,
+  FACET_WEARABLE,
+  REPORT_ABI,
+}
