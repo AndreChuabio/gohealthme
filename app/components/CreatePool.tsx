@@ -10,6 +10,8 @@ import {
   getHealthPoolsAddress,
   healthPoolsAbi,
   parseUsdc,
+  withDocMarker,
+  type EvidenceType,
 } from "@/lib/contract";
 import { useEmbeddedWallet } from "@/lib/wallet";
 import { useUsdcDeposit } from "@/lib/useUsdcDeposit";
@@ -24,6 +26,48 @@ const DURATION_OPTIONS: { label: string; days: number }[] = [
 ];
 
 const SECONDS_PER_DAY = 86_400;
+
+interface DocTemplate {
+  key: string;
+  label: string;
+  initiative: string;
+  goal: string;
+  entryFee: string;
+  funding: string;
+}
+
+/**
+ * One-tap preventive-care templates for document-verified goals, modeled on
+ * the UnitedHealthcare rewards catalog (flu shot, biometric screening, lipid
+ * panel). Selecting one prefills the form; the goal text is encoded as a
+ * document goal at submit time via withDocMarker.
+ */
+const DOC_TEMPLATES: DocTemplate[] = [
+  {
+    key: "flu-shot",
+    label: "Get your flu shot",
+    initiative: "flu-shot",
+    goal: "Get your annual flu shot and upload your vaccination record showing the date.",
+    entryFee: "0.00",
+    funding: "10.00",
+  },
+  {
+    key: "biometric",
+    label: "Biometric screening",
+    initiative: "biometric",
+    goal: "Complete a biometric screening and upload the result document (blood pressure, BMI, glucose).",
+    entryFee: "0.00",
+    funding: "50.00",
+  },
+  {
+    key: "cholesterol",
+    label: "Cholesterol panel under 200",
+    initiative: "cholesterol",
+    goal: "Upload a lab report showing total cholesterol under 200 mg/dL.",
+    entryFee: "0.00",
+    funding: "25.00",
+  },
+];
 
 /**
  * Read the new pool id out of the createPool receipt by decoding the
@@ -68,6 +112,7 @@ function CreatePoolInner() {
   const { ready, authenticated, login } = useEmbeddedWallet();
   const { status, busy, reset, runUsdcDeposit } = useUsdcDeposit();
 
+  const [evidenceType, setEvidenceType] = useState<EvidenceType>("wearable");
   const [initiative, setInitiative] = useState<string>("");
   const [goalSpec, setGoalSpec] = useState<string>("");
   const [entryFee, setEntryFee] = useState<string>("");
@@ -86,6 +131,15 @@ function CreatePoolInner() {
       />
     );
   }
+
+  const applyTemplate = (template: DocTemplate) => {
+    setEvidenceType("document");
+    setInitiative(template.initiative);
+    setGoalSpec(template.goal);
+    setEntryFee(template.entryFee);
+    setInitialFunding(template.funding);
+    setFormError(null);
+  };
 
   const submit = async () => {
     setFormError(null);
@@ -120,12 +174,17 @@ function CreatePoolInner() {
     const periodStart = now;
     const periodEnd = now + BigInt(durationDays * SECONDS_PER_DAY);
 
+    const encodedGoalSpec =
+      evidenceType === "document"
+        ? withDocMarker(goalSpec.trim())
+        : goalSpec.trim();
+
     try {
       const depositHash = await runUsdcDeposit(fundingUsdc, {
         functionName: "createPool",
         args: [
           initiative.trim(),
-          goalSpec.trim(),
+          encodedGoalSpec,
           entryFeeUsdc,
           periodStart,
           periodEnd,
@@ -168,6 +227,62 @@ function CreatePoolInner() {
       </div>
 
       <div className="space-y-4 rounded-2xl border border-edge bg-surface p-5">
+        <fieldset className="block text-sm font-medium">
+          <legend>How is the goal verified</legend>
+          <div className="mt-2 grid gap-2 sm:grid-cols-2">
+            <button
+              type="button"
+              onClick={() => setEvidenceType("wearable")}
+              className={`rounded-xl border p-3 text-left ${
+                evidenceType === "wearable"
+                  ? "border-accent/50 bg-accent-deep text-accent"
+                  : "border-edge bg-surface-raised text-muted hover:text-foreground"
+              }`}
+            >
+              <span className="block font-semibold">Wearable data</span>
+              <span className="block text-xs font-normal">
+                Verified from connected device metrics like sleep or steps.
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setEvidenceType("document")}
+              className={`rounded-xl border p-3 text-left ${
+                evidenceType === "document"
+                  ? "border-accent/50 bg-accent-deep text-accent"
+                  : "border-edge bg-surface-raised text-muted hover:text-foreground"
+              }`}
+            >
+              <span className="block font-semibold">Document upload</span>
+              <span className="block text-xs font-normal">
+                Verified from an uploaded record like a flu shot or lab result.
+              </span>
+            </button>
+          </div>
+        </fieldset>
+
+        {evidenceType === "document" ? (
+          <div className="block text-sm font-medium">
+            Preventive-care templates
+            <div className="mt-2 flex flex-wrap gap-2">
+              {DOC_TEMPLATES.map((template) => (
+                <button
+                  key={template.key}
+                  type="button"
+                  onClick={() => applyTemplate(template)}
+                  className="rounded-xl border border-accent/40 bg-accent-deep/10 px-4 py-2 text-sm font-medium text-accent hover:bg-accent-deep/30"
+                >
+                  {template.label}
+                </button>
+              ))}
+            </div>
+            <span className="mt-1 block text-xs font-normal text-muted">
+              One tap prefills the goal, entry fee, and a suggested bounty. You
+              can edit anything before creating.
+            </span>
+          </div>
+        ) : null}
+
         <label className="block text-sm font-medium">
           Initiative
           <input
@@ -185,14 +300,20 @@ function CreatePoolInner() {
         <label className="block text-sm font-medium">
           Goal
           <textarea
-            placeholder="Sleep at least 7 hours every night for the period."
+            placeholder={
+              evidenceType === "document"
+                ? "Get your annual flu shot and upload your vaccination record."
+                : "Sleep at least 7 hours every night for the period."
+            }
             value={goalSpec}
             onChange={(e) => setGoalSpec(e.target.value)}
             rows={3}
             className="mt-1 w-full rounded-xl border border-edge bg-surface-raised px-3 py-3 text-base"
           />
           <span className="mt-1 block text-xs text-muted">
-            The human-readable goal participants commit to.
+            {evidenceType === "document"
+              ? "Describe what participants must upload. Saved as a document goal so the right verifier and badge are used."
+              : "The human-readable goal participants commit to."}
           </span>
         </label>
 

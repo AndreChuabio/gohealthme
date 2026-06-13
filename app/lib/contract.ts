@@ -388,3 +388,42 @@ export const BOUNTY_MODEL_LABELS: Record<number, string> = {
   0: "Fixed bounty per achiever",
   1: "Pro-rata pot split",
 };
+
+// ------------------------------------------------------------ evidence type
+
+/**
+ * Evidence convention. The contract goalSpec is a free-form string, so we
+ * encode how a goal is verified by an optional leading marker:
+ *
+ *   "[doc] ..."  -> verified by an uploaded document (flu shot, lab PDF, etc.)
+ *   anything else -> verified by wearable data (the original behavior)
+ *
+ * The marker is for routing and badges only; no contract call changes. Older
+ * pools created before this convention have no marker and render as wearable,
+ * which keeps the feature fully backward compatible.
+ */
+export const DOC_GOAL_MARKER = "[doc]";
+
+export type EvidenceType = "document" | "wearable";
+
+/** Decide how a goal is verified from its goalSpec string. */
+export function evidenceTypeOf(goalSpec: string): EvidenceType {
+  return goalSpec.trimStart().toLowerCase().startsWith(DOC_GOAL_MARKER)
+    ? "document"
+    : "wearable";
+}
+
+/** Prefix a goalSpec with the document marker, avoiding duplicate markers. */
+export function withDocMarker(goalSpec: string): string {
+  const trimmed = goalSpec.trim();
+  return evidenceTypeOf(trimmed) === "document"
+    ? trimmed
+    : `${DOC_GOAL_MARKER} ${trimmed}`;
+}
+
+/** Strip the document marker for human-readable display. */
+export function displayGoalSpec(goalSpec: string): string {
+  const trimmed = goalSpec.trim();
+  if (evidenceTypeOf(trimmed) !== "document") return trimmed;
+  return trimmed.slice(trimmed.toLowerCase().indexOf(DOC_GOAL_MARKER) + DOC_GOAL_MARKER.length).trim();
+}

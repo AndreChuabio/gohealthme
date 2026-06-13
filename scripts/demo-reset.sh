@@ -13,7 +13,8 @@
 # Usage (from repo root):
 #   ./scripts/demo-reset.sh                         # fresh deploy + seed (clean slate)
 #   EXISTING_POOLS=0x.. ./scripts/demo-reset.sh     # seed into the current contract
-#   SEED_FUNDING=2000000 ./scripts/demo-reset.sh    # 2 USDC per pool (default 1 USDC)
+#   SEED_FUNDING=2000000 ./scripts/demo-reset.sh    # 2 USDC per wearable pool (default 1 USDC)
+#   FLU_FUNDING=10000000 SCREENING_FUNDING=50000000 ./scripts/demo-reset.sh  # real $10/$50 preventive pools
 #
 # Requires: foundry on PATH, funded DEPLOYER_PRIVATE_KEY + ORACLE_SIGNER_PRIVATE_KEY
 # in .env. Gas on Arc is native USDC: top up at https://faucet.circle.com.
@@ -29,13 +30,20 @@ set -a; source .env; set +a
 
 RPC="${ARC_RPC_URL:-https://rpc.testnet.arc.network}"
 USDC="${ARC_USDC_ADDRESS:-0x3600000000000000000000000000000000000000}"
-FUND="${SEED_FUNDING:-1000000}"          # 1 USDC per pool (6 decimals)
+FUND="${SEED_FUNDING:-1000000}"          # 1 USDC per wearable pool (6 decimals)
+# Document-verified preventive-care pools. Inspired by UnitedHealthcare's
+# preventive-care incentives ("get your flu shot", "biometric screening"). The
+# real demo funds these at $10 / $50; we default to 1 USDC each so a thin
+# testnet-USDC deployer can still seed a full clean slate. Override per pool:
+#   FLU_FUNDING=10000000 SCREENING_FUNDING=50000000 ./scripts/demo-reset.sh
+FLU_FUNDING="${FLU_FUNDING:-1000000}"           # demo: 1 USDC  (real demo: 10000000 = $10)
+SCREENING_FUNDING="${SCREENING_FUNDING:-2000000}" # demo: 2 USDC  (real demo: 50000000 = $50)
 KEY="$DEPLOYER_PRIVATE_KEY"
 DEPLOYER="$(cast wallet address --private-key "$KEY")"
 ORACLE="${ORACLE:-$(cast wallet address --private-key "$ORACLE_SIGNER_PRIVATE_KEY")}"
 
-# Budget check: gas (native USDC) + 3 fundings must fit.
-TOTAL_FUND=$((FUND * 3))
+# Budget check: gas (native USDC) + all five fundings must fit.
+TOTAL_FUND=$((FUND * 3 + FLU_FUNDING + SCREENING_FUNDING))
 BAL="$(cast call "$USDC" "balanceOf(address)(uint256)" "$DEPLOYER" --rpc-url "$RPC")"
 BAL="${BAL%% *}"
 if [ "$BAL" -lt "$TOTAL_FUND" ]; then
@@ -63,14 +71,19 @@ echo "==> Approving $TOTAL_FUND USDC"
 cast send "$USDC" "approve(address,uint256)" "$POOLS" "$TOTAL_FUND" \
   --private-key "$KEY" --rpc-url "$RPC" >/dev/null
 
-# 3. Seed three branded, wearable-verifiable pools (no MediaPipe — matches the demo spine).
+# 3. Seed branded pools. The first three are wearable-verifiable (the demo spine).
+#    The last two are DOCUMENT-verified preventive-care goals: their goalSpec is
+#    prefixed with the "[doc]" marker that app/lib/contract.ts uses to route a
+#    pool to the upload-evidence flow instead of the wearable flow.
 NOW="$(date +%s)"
+# seed_pool <initiative> <goal> <entry> <days> <model> <funding>
+# <funding> is optional; defaults to $FUND so existing wearable calls are unchanged.
 seed_pool() {
-  local initiative="$1" goal="$2" entry="$3" days="$4" model="$5"
+  local initiative="$1" goal="$2" entry="$3" days="$4" model="$5" funding="${6:-$FUND}"
   local end=$((NOW + days * 86400))
   cast send "$POOLS" \
     "createPool(string,string,uint256,uint64,uint64,uint8,uint256)" \
-    "$initiative" "$goal" "$entry" "$NOW" "$end" "$model" "$FUND" \
+    "$initiative" "$goal" "$entry" "$NOW" "$end" "$model" "$funding" \
     --private-key "$KEY" --rpc-url "$RPC" >/dev/null
   echo "    seeded: $initiative"
 }
@@ -79,6 +92,12 @@ echo "==> Seeding pools"
 seed_pool "sleep"    "Sleep performance score 75 or higher for 3 consecutive nights (sponsored by Dreamwell Mattress)" 250000 3 0
 seed_pool "recovery" "WHOOP recovery 60 percent or higher on 5 of 7 days (sponsored by Vitality Insurance)"          250000 7 1
 seed_pool "steps"    "10,000 steps daily for 5 days (sponsored by Iron Gym)"                                         0      5 0
+
+# Document-verified preventive-care pools (UnitedHealthcare-style incentives).
+# entry 0 (free to join), 30-day period, fixed-bounty model (0). Funding defaults
+# to 1/2 USDC for a thin testnet wallet; real demo uses $10 / $50 (see top of file).
+seed_pool "flu-shot"  "[doc] Get your flu shot — upload your influenza vaccination record (provider, date, lot)" 0 30 0 "$FLU_FUNDING"
+seed_pool "screening" "[doc] Biometric screening — upload your results (blood pressure, BMI, glucose)"           0 30 0 "$SCREENING_FUNDING"
 
 # 4. Sync the address into env files.
 echo "==> Syncing address into .env, app/.env.local, DEPLOYMENTS.md"
@@ -102,7 +121,8 @@ PY
   echo "## Demo reset $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   echo "- HealthPools: $POOLS"
   echo "- Explorer: https://testnet.arcscan.app/address/$POOLS"
-  echo "- Seeded: sleep (Dreamwell), recovery (Vitality), steps (Iron Gym)"
+  echo "- Seeded: sleep (Dreamwell), recovery (Vitality), steps (Iron Gym),"
+  echo "          flu-shot [doc], screening [doc] (preventive-care, document-verified)"
 } >> DEPLOYMENTS.md
 
 POOL_COUNT="$(cast call "$POOLS" "poolCount()(uint256)" --rpc-url "$RPC")"

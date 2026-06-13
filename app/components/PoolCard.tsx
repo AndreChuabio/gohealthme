@@ -3,23 +3,36 @@ import Countdown from "@/components/Countdown";
 import { Badge } from "@/components/ui";
 import {
   BOUNTY_MODEL_LABELS,
+  displayGoalSpec,
+  evidenceTypeOf,
   formatUsdc,
   shortAddress,
   type PoolInfo,
 } from "@/lib/contract";
 
 export default function PoolCard({ pool }: { pool: PoolInfo }) {
+  const isDocGoal = evidenceTypeOf(pool.goalSpec) === "document";
   return (
     <Link
       href={`/pools/${pool.id.toString()}`}
       className="block rounded-2xl border border-edge bg-surface p-5 transition-colors hover:border-accent/50"
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <Badge>{pool.initiative}</Badge>
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge>{pool.initiative}</Badge>
+          <Badge tone={isDocGoal ? "accent" : "muted"}>
+            {isDocGoal ? "Document" : "Wearable"}
+          </Badge>
+        </div>
         {pool.settled ? <Badge tone="muted">Settled</Badge> : null}
       </div>
+      {isDocGoal ? (
+        <p className="mt-3 text-xs font-semibold uppercase tracking-wide text-accent">
+          Preventive care - Earn from {formatUsdc(pool.balance)} USDC
+        </p>
+      ) : null}
       <h3 className="mt-3 text-xl font-semibold leading-snug">
-        {pool.goalSpec}
+        {displayGoalSpec(pool.goalSpec)}
       </h3>
       <p className="mt-1 text-xs text-muted">
         Funder {shortAddress(pool.creator)} ·{" "}
