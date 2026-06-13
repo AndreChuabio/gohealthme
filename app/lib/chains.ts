@@ -1,5 +1,4 @@
 import { defineChain } from "viem";
-import { sepolia } from "viem/chains";
 
 /**
  * Arc testnet. Gas is paid in native USDC (18 decimals at the protocol
@@ -31,8 +30,6 @@ export const arcTestnet = defineChain({
   },
   testnet: true,
 });
-
-export { sepolia };
 
 export function arcTxUrl(txHash: string): string {
   return `https://testnet.arcscan.app/tx/${txHash}`;

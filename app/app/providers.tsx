@@ -6,18 +6,19 @@ import { EthereumWalletConnectors } from "@dynamic-labs/ethereum";
 import { DynamicWagmiConnector } from "@dynamic-labs/wagmi-connector";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { WagmiProvider, createConfig, fallback, http } from "wagmi";
-import { arcTestnet, sepolia } from "@/lib/chains";
+import { arcTestnet } from "@/lib/chains";
 import { arcEvmNetwork } from "@/lib/dynamic";
 
+// Arc-only. Sepolia was removed with the dropped ENS work — its unreachable
+// default RPC was timing out in the wallet connector (UnknownRpcError).
 const wagmiConfig = createConfig({
-  chains: [arcTestnet, sepolia],
+  chains: [arcTestnet],
   transports: {
     [arcTestnet.id]: fallback([
       http("https://rpc.testnet.arc.network"),
       http("https://rpc.blockdaemon.testnet.arc.network"),
       http("https://rpc.drpc.testnet.arc.network"),
     ]),
-    [sepolia.id]: http(),
   },
   connectors: [],
   ssr: true,
