@@ -8,13 +8,22 @@ import {
 } from "@unlink-xyz/sdk/admin";
 import { requireEnv, optionalEnv } from "@/lib/server/env";
 
+/**
+ * 0.3.0 requires EXACTLY ONE of `engineUrl` or `environment`. Prefer an
+ * explicit UNLINK_ENGINE_URL when set, otherwise fall back to the named
+ * environment (which the SDK resolves to its engine URL internally).
+ */
+export function unlinkEndpoint():
+  | { engineUrl: string }
+  | { environment: string } {
+  const engineUrl = process.env.UNLINK_ENGINE_URL?.trim();
+  if (engineUrl) return { engineUrl };
+  return { environment: optionalEnv("UNLINK_ENVIRONMENT", "arc-testnet") };
+}
+
 function unlinkAdmin() {
   return createUnlinkAdmin({
-    environment: optionalEnv("UNLINK_ENVIRONMENT", "arc-testnet"),
-    // Optional URL override: if UNLINK_ENGINE_URL is set it takes precedence.
-    ...(process.env.UNLINK_ENGINE_URL
-      ? { engineUrl: process.env.UNLINK_ENGINE_URL }
-      : {}),
+    ...unlinkEndpoint(),
     apiKey: requireEnv("UNLINK_API_KEY"),
   });
 }

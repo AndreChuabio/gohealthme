@@ -16,7 +16,7 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { requireEnv, optionalEnv } from "@/lib/server/env";
-import { unlinkAdmin } from "@/lib/server/unlink-admin";
+import { unlinkAdmin, unlinkEndpoint } from "@/lib/server/unlink-admin";
 
 export const ARC_USDC_ADDRESS =
   "0x3600000000000000000000000000000000000000";
@@ -62,10 +62,7 @@ export function treasuryUnlinkClient(): UnlinkClient {
   const admin = unlinkAdmin();
 
   return createUnlinkClient({
-    environment: optionalEnv("UNLINK_ENVIRONMENT", "arc-testnet"),
-    ...(process.env.UNLINK_ENGINE_URL
-      ? { engineUrl: process.env.UNLINK_ENGINE_URL }
-      : {}),
+    ...unlinkEndpoint(),
     account: treasuryAccount,
     evm: evm.fromViem({ walletClient, publicClient }),
     authorizationToken: {
