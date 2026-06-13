@@ -113,3 +113,131 @@ Next.js (frontend + API routes) with Privy embedded wallets ->
 
 Real WHOOP sleep streak -> oracle/attester verdict -> USDC lands live on Arc (the WOW) -> audience backs
 a goal via World ID QR. Settlement is the punchline. Keep one clean happy path; everything else is gravy.
+
+---
+
+# PLAN: Multi-modal evidence + goal-creation agent (2026-06-13 pivot)
+
+This section supersedes the WHOOP-only framing above. Read it before starting work.
+
+## Why the pivot
+
+We don't have real WHOOP data, and tying the demo to a live WHOOP OAuth account is a fragile dependency.
+Instead: **mocked, multi-modal health evidence** judged by a real AI judge into an on-chain verdict. This
+also kills the WHOOP-creds blocker and makes the product strictly stronger — the story becomes "ANY
+verifiable health goal (labs, wearable, a lift on video, weight loss) runs through the same trustless
+verdict pipeline," not "we read sleep scores." WHOOP code stays as one optional wearable source; the demo
+runs on mocks.
+
+EASEeHealth (Darbease/EASEeHealth) is REFERENCE-ONLY/unlicensed — we took the *data-discipline concepts*
+(no PHI on-chain, hashes/commitments only, deterministic IDs, nullifiers) and rebuild everything ourselves.
+
+## Locked decisions
+
+- Modalities (all mocked): **clinical/blood work, wearable series, video lift (240 lbs), weight/biometric**.
+- **Real judge across ALL modalities** (Claude, vision-capable for video frames). No canned verdicts.
+- **Both settle paths** — A (oracle, proven on Arc) drives the live demo; B (Chainlink CRE + Confidential
+  AI Attester, now UNBLOCKED) runs the same judge logic in a TEE -> DON report -> HealthVerdict -> gated settle.
+- Goal creation via an **AI agent, BOTH personas**: sponsor (insurer/employer/gov) and participant (self-goal/stake).
+
+## Core idea: one schema, four modalities, one judge
+
+Normalize every input into a generic evidence doc + a goal rubric; the judge decides; only the verdict +
+hashes go on-chain. Raw evidence (blood panel, video, readings) NEVER touches the chain.
+
+```
+goal (rubric)        mocked evidence (raw, off-chain)        real judge (Claude / TEE attester)
+  any health goal  <-- blood panel JSON  ─┐
+                       weight/sleep series ┼─> normalize (text or video frames) ──> judge(rubric, evidence)
+                       lift video (frames)─┘                         │
+                                          { verified, confidence, reasonBitmap, inputDigest }
+                       path A: oracle signs ──┐                      │
+                       path B: CRE attester (TEE) → DON report ──> HealthVerdict ──> settle USDC on Arc
+```
+
+Symmetry worth pitching: **one model writes the rubric (creation), another judges against it (verification).**
+
+## Shared schemas — FREEZE THESE FIRST (the contract between app, CRE, and chain)
+
+Challenge is **rubric-centric**: a natural-language objective criterion is ALWAYS present; the numeric
+predicate is an OPTIONAL machine-checkable shortcut. This is what lets ANY goal be entered.
+
+```
+Challenge {
+  id, title, description           // human-facing; description shows on the pool card
+  createdBy:    "sponsor" | "participant"
+  sponsorType?: "insurer" | "employer" | "gov" | "individual"
+  evidenceTypes: string[]          // free-form: ["clinical_lab","wearable","video","photo","document"]
+  predicate?: {                    // OPTIONAL — only when cleanly numeric
+    metric: string                 // ANY string: "fasting_glucose_mgdl","deadlift_lbs","weight_lbs"
+    comparator: ">=" | "<=" | "==" | "trend_to"
+    target: number, unit: string
+    aggregation: "single" | "streak" | "average" | "count"
+    periodDays?: number
+  }
+  rubric: string                   // ALWAYS present — the objective criterion the JUDGE evaluates
+  reward: { totalUsdc, perAchieverUsdc, maxAchievers?, deadline? }
+}
+
+Verdict {
+  goalId:       bytes32            // keccak256(poolId, participant, periodStart, metric) — deterministic
+  verified:     bool
+  confidence:   uint8              // 0–100
+  reasonBitmap: uint256            // bit0 predicate-met, bit1 evidence-plausible, bit2 in-period, bit3 confident
+  inputDigest:  bytes32            // keccak256 of canonical evidence bytes
+  modality:     enum
+}
+```
+
+On-chain posture: store only `challengeHash = keccak256(canonical(Challenge))` at pool creation and the
+`Verdict` (+ inputDigest) at settle. Full Challenge AND raw evidence live off-chain.
+
+## Goal-creation agent (both personas)
+
+NL goal + persona -> agent drafts a structured `Challenge` -> editable preview in `/pools/create` ->
+confirm -> `createPool(challengeHash, reward)` on-chain. The agent's job is to make the rubric objective,
+time-bound, and not gameable, and to flag when the chosen evidence types can't actually prove the goal.
+- Sponsor flow = the enterprise/payer headline (stand up a trustless incentive in ~60s).
+- Participant flow = personal goal + optional self-stake multiplier.
+- Reuses Andre's `judge.ts` Claude plumbing.
+
+OPEN DECISION (Nikki to confirm): agent depth = **one-shot draft (recommended MVP)** vs multi-turn
+interview (stretch; more wow, more live-demo risk).
+
+## 12-hour split
+
+FIRST 30 MIN TOGETHER: freeze the Challenge + Verdict schemas above. Nothing parallelizes cleanly until then.
+
+Nikki — evidence + frontend + demo:
+- Mock evidence generators: blood panel JSON, weight series, wearable series (tunable to pass/fail).
+- Goal-creation agent UX (both personas) wired into `/pools/create`; editable Challenge preview.
+- Modality/challenge picker -> submit evidence -> show verdict (confidence + reasons) -> "USDC landed".
+- Video modality: short deadlift clip + extract 2–3 frames (or curated frames) for the vision judge.
+- Demo script: multi-modal "any health goal, raw data never on-chain" narrative. Delete dead ENS code.
+
+Andre — judge + contracts + Chainlink:
+- `app/lib/server/judge.ts`: shared real judge (Claude vision, structured `Verdict`, refuses to invent data).
+- `HealthVerdict.sol`: add inputDigest + confidence + reasonBitmap + deterministic goalId + per-period
+  nullifier; deploy to Arc (forge create, not forge script — see gotcha). NOTE: forge not currently
+  installed on this machine — reinstall foundry first, re-confirm 62 tests green.
+- CRE path B (unblocked): generalize attester prompt to multi-modal evidence -> DON report -> onReport -> gated settle.
+- Wire path A oracle to sign the judge's verdict.
+
+Sync points: after schema freeze, after first live verdict, after first on-chain settle, final rehearsal.
+
+## New files to create (rebuilt from scratch)
+
+- `app/lib/evidence/types.ts` — Challenge + Verdict + EvidencePacket schemas (the frozen contract).
+- `app/lib/evidence/mock/{clinical,wearable,video,weight}.ts` — mock evidence generators.
+- `app/lib/server/judge.ts` — generic real judge (shared by path A and conceptually mirrored in CRE).
+- `app/lib/server/digest.ts` — canonical serialization + keccak256 (challengeHash, inputDigest).
+- `app/lib/server/goalAgent.ts` — NL goal + persona -> structured Challenge draft.
+- `app/api/evidence/submit/route.ts` — run judge over submitted mock evidence -> verdict -> path A sign.
+- `app/api/goals/draft/route.ts` — goal-creation agent endpoint.
+
+## Scope guardrails
+
+- MVP must-have: schemas frozen; 2–3 modalities mocked + judged live; goal agent one-shot draft;
+  path A live settle with inputDigest on-chain.
+- Stretch: 4th modality; path B TEE attester live; multi-turn agent; reasonBitmap UI; fraud nudges.
+- The goal agent and extra modalities must NOT sit on the live settlement critical path — they can't break the demo.
