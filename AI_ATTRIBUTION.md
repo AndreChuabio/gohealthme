@@ -15,5 +15,9 @@ All entries below were produced during the event (after Fri Jun 12, 9:00pm EDT) 
 | app/components/CreatePool.tsx, app/app/pools/create/page.tsx | AI-generated pool creation flow, human-reviewed |
 | app/components/FundPool.tsx | AI-generated pool top-up component, human-reviewed |
 | app/components/BackGoal.tsx | AI-assisted refactor onto shared deposit hook, human-reviewed |
+| cre/wf-goal-verification/main.ts | AI-generated Chainlink CRE workflow (HTTP trigger, confidential judge, DON report + writeReport), built against public CRE docs and @chainlink/cre-sdk types, human-reviewed |
+| cre/wf-goal-verification/workflow.yaml, cre/project.yaml, cre/wf-goal-verification/config.json | AI-generated CRE project manifests matching the official minimal-cre-examples schema, human-reviewed |
+| cre/mock-judge/server.mjs, cre/src/dry-run.ts | AI-generated local mock judge stub and deterministic dry-run harness, human-reviewed |
+| cre/README.md | AI-generated CRE workflow docs (privacy design, simulation steps, booth dependencies), human-reviewed |
 
 Design decisions, architecture, and prize strategy: human-led with AI research support (documented in team notes).

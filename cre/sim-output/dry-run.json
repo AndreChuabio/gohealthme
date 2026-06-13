@@ -1,0 +1,28 @@
+{
+  "workflow": "wf-goal-verification",
+  "mode": "dry-run (deterministic core, no DON signature / no on-chain write)",
+  "input": {
+    "poolId": 1,
+    "user": "0x8ba1f109551bD432803012645Ac136ddd64DBA72",
+    "goalSpec": "Average >= 8000 steps/day sustained across the current 7-day window",
+    "baselineWeekAvg": 6200,
+    "currentWindowAvg": 8450,
+    "streakDays": 6
+  },
+  "goalId": "0x7611f4f43bd80cbc242bf4a6e62d546adbb8eaff465c8fdb0cdeb486648b720a",
+  "verdict": {
+    "verified": true,
+    "confidence": "high",
+    "multiplierBps": 13815
+  },
+  "confidenceU8": 2,
+  "digest": "0xfb6f69a1b370ad99607149161ee5d159b82d85f0ae32dd95b0051e07e8e21886",
+  "bitmap": 5,
+  "bitmapBits": {
+    "wearable": true,
+    "aiAttested": true
+  },
+  "receiverCall": "HealthVerdict.recordVerdict(bytes32,bool,uint8,bytes32,uint16)",
+  "encodedCall": "0xaf35f4567611f4f43bd80cbc242bf4a6e62d546adbb8eaff465c8fdb0cdeb486648b720a00000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000002fb6f69a1b370ad99607149161ee5d159b82d85f0ae32dd95b0051e07e8e218860000000000000000000000000000000000000000000000000000000000000005",
+  "note": "In the CRE host this encodedCall is wrapped by runtime.report(...) into a DON-signed report, then EVMClient.writeReport forwards it to HealthVerdict on Arc."
+}

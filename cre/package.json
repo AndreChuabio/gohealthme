@@ -1,0 +1,21 @@
+{
+  "name": "gohealthme-cre",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "GoHealthMe Chainlink CRE workflow: wf-goal-verification. Judges a derived health summary off-chain via a confidential HTTP call and writes a DON-signed verdict to HealthVerdict.recordVerdict.",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "dry-run": "tsx src/dry-run.ts",
+    "mock-judge": "node mock-judge/server.mjs",
+    "simulate": "cre workflow simulate ./wf-goal-verification --target local-simulation --non-interactive --trigger-index 0 --http-payload @./payloads/goal-verification.json"
+  },
+  "dependencies": {
+    "@chainlink/cre-sdk": "^1.11.0",
+    "viem": "^2.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
+}
