@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { decodeEventLog } from "viem";
-import { PRIVY_CONFIGURED } from "@/lib/config";
+import { DYNAMIC_CONFIGURED } from "@/lib/config";
 import {
   getArcPublicClient,
   getHealthPoolsAddress,
@@ -472,11 +472,11 @@ function CreatePoolInner() {
 }
 
 export default function CreatePool() {
-  if (!PRIVY_CONFIGURED) {
+  if (!DYNAMIC_CONFIGURED) {
     return (
       <ErrorNote
         title="Sign-in is not configured"
-        detail="Set NEXT_PUBLIC_PRIVY_APP_ID to enable pool creation with an embedded wallet."
+        detail="Set NEXT_PUBLIC_DYNAMIC_ENVIRONMENT_ID to enable pool creation with an embedded wallet."
       />
     );
   }

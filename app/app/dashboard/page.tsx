@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { PRIVY_CONFIGURED } from "@/lib/config";
+import { DYNAMIC_CONFIGURED } from "@/lib/config";
 import DashboardContent from "@/components/DashboardContent";
 import { EmptyState } from "@/components/ui";
 
@@ -16,12 +16,12 @@ export default function DashboardPage() {
           Pools you have joined and your verified progress.
         </p>
       </div>
-      {PRIVY_CONFIGURED ? (
+      {DYNAMIC_CONFIGURED ? (
         <DashboardContent />
       ) : (
         <EmptyState
           title="Sign-in is not configured"
-          detail="Set NEXT_PUBLIC_PRIVY_APP_ID to enable embedded wallets and personal dashboards."
+          detail="Set NEXT_PUBLIC_DYNAMIC_ENVIRONMENT_ID to enable embedded wallets and personal dashboards."
           action={
             <Link
               href="/pools"

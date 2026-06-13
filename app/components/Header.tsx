@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { PRIVY_CONFIGURED } from "@/lib/config";
+import { DYNAMIC_CONFIGURED } from "@/lib/config";
 import { shortAddress } from "@/lib/contract";
 import { useEmbeddedWallet } from "@/lib/wallet";
 
@@ -94,7 +94,7 @@ export default function Header() {
         </Link>
         <nav className="flex items-center gap-1 text-sm font-medium sm:gap-2">
           <NavLinks />
-          {PRIVY_CONFIGURED ? (
+          {DYNAMIC_CONFIGURED ? (
             <AuthControls />
           ) : (
             <span className="rounded-lg border border-edge px-3 py-2 text-xs text-muted">

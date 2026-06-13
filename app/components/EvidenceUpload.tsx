@@ -3,7 +3,7 @@
 import { useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { arcTxUrl } from "@/lib/chains";
-import { PRIVY_CONFIGURED } from "@/lib/config";
+import { DYNAMIC_CONFIGURED } from "@/lib/config";
 import { displayGoalSpec } from "@/lib/contract";
 import { useEmbeddedWallet } from "@/lib/wallet";
 import { ErrorNote } from "@/components/ui";
@@ -510,11 +510,11 @@ export default function EvidenceUpload({
   poolId: bigint;
   goalSpec: string;
 }) {
-  if (!PRIVY_CONFIGURED) {
+  if (!DYNAMIC_CONFIGURED) {
     return (
       <ErrorNote
         title="Sign-in is not configured"
-        detail="Set NEXT_PUBLIC_PRIVY_APP_ID to enable submitting records with an embedded wallet."
+        detail="Set NEXT_PUBLIC_DYNAMIC_ENVIRONMENT_ID to enable submitting records with an embedded wallet."
       />
     );
   }
