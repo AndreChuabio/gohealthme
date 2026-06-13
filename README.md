@@ -2,13 +2,15 @@
 
 Verified health goals with instant USDC rewards. Built at ETHGlobal New York 2026.
 
-Insurers already pay people for healthy behaviors — through opaque points systems and gift cards that arrive weeks later. GoHealthMe puts that model on-chain: sponsor-funded USDC pools pay out the instant a verified behavior happens, gated so every participant is a unique human, with goals and achievements living on ENS as portable health reputation.
+Insurers already pay people for healthy behaviors — through opaque points systems and gift cards that arrive weeks later. GoHealthMe puts that model on-chain: sponsor-funded USDC pools pay out the instant a verified behavior happens, gated so every participant is a unique human, with the verification done by a confidential, decentralized oracle rather than a company.
+
+Partners: Arc (USDC settlement chain), World (proof-of-human), Chainlink (CRE + Confidential AI Attester verification).
 
 ## How it works
 
 1. Anyone funds an initiative pool (sleep, workouts, preventive care) with USDC and published bounties
 2. Participants join with a World ID proof — one human, one entry; the product breaks without proof-of-human
-3. Wearable data (WHOOP) verifies the behavior off-chain; only verdicts ever touch the chain
+3. Health data is verified off-chain (WHOOP, or a Chainlink Confidential AI Attester judging the goal inside a TEE); only the verdict ever touches the chain
 4. The pool settles instantly: achievers get paid, forfeits roll back into the pool
 5. Optional: stake on your own streak for a multiplier, or back someone else's goal
 
@@ -17,27 +19,34 @@ Insurers already pay people for healthy behaviors — through opaque points syst
 ```
 Next.js (frontend + API) -- Privy embedded wallets
    |          |
-   |          +-- World ID cloud verify (backend)
-   |          +-- WHOOP OAuth -> oracle signer
+   |          +-- World ID cloud verify (backend) --> nullifier gates joinPool
+   |          +-- WHOOP OAuth -> health summary
+   |                               |
+   |              verdict path A (live demo): oracle signer
+   |              verdict path B (Chainlink):
+   |                Confidential AI Attester (TEE inference)
+   |                  -> CRE workflow callback
+   |                  -> DON-signed report
+   |                  -> HealthVerdict.onReport
    |                               |
    |                               v
    |                    HealthPools.sol (Arc testnet)
-   |                    USDC escrow / settle / multipliers
-   |                               |
-   +-- ENS on Sepolia <------------+
-       pools = subnames, terms in text records
-       user subnames carry achievement records
+   |                    USDC escrow / settle / multipliers / backing
+   |                    settle() gates on HealthVerdict.canSettle() when enabled
 ```
 
-Chains: Arc testnet (chain id 5042002, USDC-native) for the product, Ethereum Sepolia for the ENS registry, Base Sepolia for cross-chain pool funding via Circle Gateway (stretch).
+Chains: Arc testnet (chain id 5042002, USDC-native) for the product and settlement. Chainlink CRE runs the off-chain goal-verification workflow. (ENS was evaluated as an identity/registry layer but dropped — Sepolia ENS was mid-migration to v2 during the event.)
 
-Privacy invariant: raw health data never touches the chain — only verdicts, streaks, and badges.
+Privacy invariant: raw health data never touches the chain — the Confidential AI Attester judges it inside a TEE and only the signed verdict (verified / confidence / digest) is recorded on-chain.
 
 ## Repo layout
 
-- `contracts/` — Foundry: HealthPools.sol, tests, deploy scripts
-- `app/` — Next.js App Router: frontend and API routes
-- `scripts/` — pool seeding and demo helpers
+- `contracts/` — Foundry: `HealthPools.sol` (pools, World ID nullifier gating, settle, backing, multipliers) and `HealthVerdict.sol` (Chainlink verdict registry + `onReport` receiver); tests; deploy script
+- `app/` — Next.js App Router: frontend and API routes (World verify, WHOOP, oracle signer)
+- `cre/` — Chainlink CRE goal-verification workflow (Confidential AI Attester callback pattern)
+- `scripts/` — `demo-reset.sh` (clean redeploy + seed) and `happy-path-test.sh` (live end-to-end proof)
+
+See `HANDOFF.md` for run steps, on-chain addresses, env setup, and open items.
 
 ## Team
 
