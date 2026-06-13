@@ -1,0 +1,19 @@
+# secrets
+.env
+.env.*
+!.env.example
+
+# node
+node_modules/
+.next/
+out/
+
+# foundry
+contracts/cache/
+contracts/out/
+contracts/broadcast/
+
+# misc
+.DS_Store
+*.log
+__pycache__/
