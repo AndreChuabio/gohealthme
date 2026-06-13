@@ -1,10 +1,13 @@
 "use client";
 
 import { useState, type ReactNode } from "react";
-import { PrivyProvider } from "@privy-io/react-auth";
+import { DynamicContextProvider } from "@dynamic-labs/sdk-react-core";
+import { EthereumWalletConnectors } from "@dynamic-labs/ethereum";
+import { DynamicWagmiConnector } from "@dynamic-labs/wagmi-connector";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { WagmiProvider, createConfig, fallback, http } from "wagmi";
 import { arcTestnet, sepolia } from "@/lib/chains";
+import { arcEvmNetwork } from "@/lib/dynamic";
 
 const wagmiConfig = createConfig({
   chains: [arcTestnet, sepolia],
@@ -20,11 +23,11 @@ const wagmiConfig = createConfig({
   ssr: true,
 });
 
-function PrivyMissingBanner() {
+function DynamicMissingBanner() {
   return (
     <div className="bg-amber-950 border-b border-amber-700 px-4 py-2 text-sm text-amber-200">
-      Privy is not configured. Set NEXT_PUBLIC_PRIVY_APP_ID to enable sign-in
-      and embedded wallets.
+      Dynamic is not configured. Set NEXT_PUBLIC_DYNAMIC_ENVIRONMENT_ID to
+      enable sign-in and embedded wallets.
     </div>
   );
 }
@@ -34,50 +37,29 @@ export default function Providers({ children }: { children: ReactNode }) {
     () =>
       new QueryClient({
         defaultOptions: {
-          queries: {
-            staleTime: 30_000,
-            retry: 2,
-            refetchOnWindowFocus: false,
-          },
+          queries: { staleTime: 30_000, retry: 2, refetchOnWindowFocus: false },
         },
       }),
   );
 
-  const privyAppId = process.env.NEXT_PUBLIC_PRIVY_APP_ID ?? "";
-
-  const inner = (
-    <QueryClientProvider client={queryClient}>
-      <WagmiProvider config={wagmiConfig}>{children}</WagmiProvider>
-    </QueryClientProvider>
-  );
-
-  if (privyAppId === "") {
-    return (
-      <>
-        <PrivyMissingBanner />
-        {inner}
-      </>
-    );
+  const environmentId = process.env.NEXT_PUBLIC_DYNAMIC_ENVIRONMENT_ID ?? "";
+  if (environmentId === "") {
+    return <DynamicMissingBanner />;
   }
 
   return (
-    <PrivyProvider
-      appId={privyAppId}
-      config={{
-        appearance: {
-          theme: "dark",
-          accentColor: "#34d399",
-        },
-        embeddedWallets: {
-          ethereum: {
-            createOnLogin: "users-without-wallets",
-          },
-        },
-        defaultChain: arcTestnet,
-        supportedChains: [arcTestnet, sepolia],
+    <DynamicContextProvider
+      settings={{
+        environmentId,
+        walletConnectors: [EthereumWalletConnectors],
+        overrides: { evmNetworks: [arcEvmNetwork] },
       }}
     >
-      {inner}
-    </PrivyProvider>
+      <WagmiProvider config={wagmiConfig}>
+        <QueryClientProvider client={queryClient}>
+          <DynamicWagmiConnector>{children}</DynamicWagmiConnector>
+        </QueryClientProvider>
+      </WagmiProvider>
+    </DynamicContextProvider>
   );
 }
