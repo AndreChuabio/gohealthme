@@ -1,0 +1,35 @@
+
+> gohealthme-cre@0.1.0 simulate
+> cre workflow simulate ./wf-goal-verification --target local-simulation --non-interactive --trigger-index 0 --http-payload ./simulation/callback-payload.json
+
+Initializing...
+Loading settings...
+Checking RPC connectivity...
+Compiling workflow...
+✓ Workflow compiled
+✓ Simulation limits enabled
+  HTTP: req=120kb resp=250kb timeout=10s | ConfHTTP: req=125kb resp=500kb timeout=1m30s | Consensus obs=25kb | ChainWrite report=50kb gas=10000000 | WASM binary=100mb compressed=20mb
+  Binary hash: d3d186686cd3c3284a4eed62c99f83bc3edefa6571f82444a99ac89060f21c4d
+  Config hash: 0c38cc25f611e229b1194447cabd7755d5cbd2edd553f42a84b0ed4ec42c5d8d
+✓ Loaded JSON from file: /Users/andrechuabio/Desktop/eth/gohealthme/cre/simulation/callback-payload.json
+✓ Created HTTP trigger payload with 13 fields
+2026-06-13T10:26:57Z [SIMULATION] Simulator Initialized
+
+2026-06-13T10:26:57Z [SIMULATION] Running trigger trigger=http-trigger@1.0.0-alpha
+2026-06-13T10:26:57Z [USER LOG] Inference callback received: id=019ea31f-0563-74ca-8ffe-4452b34385c9 status=completed
+2026-06-13T10:26:57Z [USER LOG] Health verdict: verified=true confidence=high metric=8450 threshold=8000
+2026-06-13T10:26:57Z [USER LOG] goalId=0x7611f4f43bd80cbc242bf4a6e62d546adbb8eaff465c8fdb0cdeb486648b720a digest=0x0a0124911560a2236e432d30c3e2a90b0666f4c84b40bf10ba01960595c6ecea
+2026-06-13T10:26:57Z [USER LOG] healthVerdictAddress unset; returning encoded-only report (no on-chain write).
+
+✓ Workflow Simulation Result:
+"{\"id\":\"019ea31f-0563-74ca-8ffe-4452b34385c9\",\"status\":\"completed\",\"goalId\":\"0x7611f4f43bd80cbc242bf4a6e62d546adbb8eaff465c8fdb0cdeb486648b720a\",\"verified\":true,\"confidence\":\"high\",\"reason\":\"The participant averaged 8,450 steps/day across the 7-day window with a 6-day on-target streak, clearing the 8,000-step threshold.\",\"metricValue\":8450,\"threshold\":8000,\"digest\":\"0x0a0124911560a2236e432d30c3e2a90b0666f4c84b40bf10ba01960595c6ecea\",\"bitmap\":5,\"receiver\":\"0x0000000000000000000000000000000000000000\",\"encodedReport\":\"0x7611f4f43bd80cbc242bf4a6e62d546adbb8eaff465c8fdb0cdeb486648b720a000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000020a0124911560a2236e432d30c3e2a90b0666f4c84b40bf10ba01960595c6ecea0000000000000000000000000000000000000000000000000000000000000005\",\"writeMode\":\"encoded-only\"}"
+
+2026-06-13T10:26:57Z [SIMULATION] Execution finished signal received
+2026-06-13T10:26:57Z [SIMULATION] Skipping WorkflowEngineV2
+2026-06-13T10:26:57Z [SIMULATION] Failed to cleanup beholder error=BeholderClient has not been started: cannot stop unstarted service
+
+╭──────────────────────────────────────────────────────╮
+│ Simulation complete! Ready to deploy your workflow?  │
+│                                                      │
+│ Run cre account access to request deployment access. │
+╰──────────────────────────────────────────────────────╯
