@@ -85,41 +85,54 @@ async function main() {
   loadEnv(".env.local");
   loadEnv("../.env.local");
 
-  const haveKey = (process.env.CONFIDENTIAL_AI_API_KEY ?? "").trim() !== "";
-  console.log(
-    haveKey
-      ? "[harness] live enclave mode (CONFIDENTIAL_AI_API_KEY set)"
-      : "[harness] MOCK mode — no CONFIDENTIAL_AI_API_KEY; verdicts are stubbed",
-  );
+  // --replay re-scores the last live run from saved votes — instant, no enclave
+  // calls — so a demo never waits on the (slow) shared enclave.
+  const replay = process.argv.includes("--replay");
+  type PerCase = { id: string; shouldPass: boolean; votes: JudgeVote[] };
+  let perCaseVotes: PerCase[];
 
-  // 1) Run the full panel once per case, recording every vote. Cases run with
-  // bounded concurrency to overlap the enclave's multi-minute queue waits; the
-  // submit-side 429 backoff throttles us to the real per-key limit.
-  const CASE_CONCURRENCY = 3;
-  const perCaseVotes: { id: string; shouldPass: boolean; votes: JudgeVote[] }[] =
-    new Array(CORPUS.length);
-  let cursor = 0;
-  async function worker() {
-    while (cursor < CORPUS.length) {
-      const index = cursor++;
-      const c = CORPUS[index];
-      console.log(`[harness] judging case ${c.id} …`);
-      const votes = await runPanel(
-        {
-          goalSpec: c.goalSpec,
-          fileBase64: Buffer.from(c.content, "utf8").toString("base64"),
-          fileName: c.fileName,
-          contentType: c.contentType,
-        },
-        FULL_PANEL,
-      );
-      perCaseVotes[index] = { id: c.id, shouldPass: c.shouldPass, votes };
-      console.log(`[harness] done case ${c.id}`);
+  if (replay) {
+    const saved = JSON.parse(readFileSync("eval/reports/raw.json", "utf8")) as {
+      perCaseVotes: PerCase[];
+    };
+    perCaseVotes = saved.perCaseVotes;
+    console.log(
+      `[harness] REPLAY — ${perCaseVotes.length} cases from saved raw.json (no enclave calls)`,
+    );
+  } else {
+    const haveKey = (process.env.CONFIDENTIAL_AI_API_KEY ?? "").trim() !== "";
+    console.log(
+      haveKey
+        ? "[harness] live enclave mode (CONFIDENTIAL_AI_API_KEY set)"
+        : "[harness] MOCK mode — no CONFIDENTIAL_AI_API_KEY; verdicts are stubbed",
+    );
+
+    // Run the full panel once per case, recording every vote. Cases run with
+    // bounded concurrency to overlap the enclave's multi-minute queue waits;
+    // the submit-side 429 backoff throttles us to the real per-key limit.
+    const CASE_CONCURRENCY = 3;
+    perCaseVotes = new Array(CORPUS.length);
+    let cursor = 0;
+    async function worker() {
+      while (cursor < CORPUS.length) {
+        const index = cursor++;
+        const c = CORPUS[index];
+        console.log(`[harness] judging case ${c.id} …`);
+        const votes = await runPanel(
+          {
+            goalSpec: c.goalSpec,
+            fileBase64: Buffer.from(c.content, "utf8").toString("base64"),
+            fileName: c.fileName,
+            contentType: c.contentType,
+          },
+          FULL_PANEL,
+        );
+        perCaseVotes[index] = { id: c.id, shouldPass: c.shouldPass, votes };
+        console.log(`[harness] done case ${c.id}`);
+      }
     }
+    await Promise.all(Array.from({ length: CASE_CONCURRENCY }, () => worker()));
   }
-  await Promise.all(
-    Array.from({ length: CASE_CONCURRENCY }, () => worker()),
-  );
 
   // 2) Score each candidate arbiter config by subsetting the recorded votes.
   const results: ArbiterResult[] = ARBITERS.map((arb) => {
@@ -141,22 +154,55 @@ async function main() {
     };
   });
 
-  // 3) Report.
-  const markdown = formatReport(results, CORPUS.length);
+  // 3) Report, with an explicit "where the judges disagreed" section so the
+  // fail-closed-on-disagreement behavior is visible.
+  const markdown =
+    formatReport(results, perCaseVotes.length) +
+    "\n" +
+    disagreementSection(perCaseVotes);
   console.log("\n" + markdown + "\n");
 
   mkdirSync("eval/reports", { recursive: true });
   writeFileSync("eval/reports/report.md", markdown + "\n");
-  writeFileSync(
-    "eval/reports/raw.json",
-    JSON.stringify({ perCaseVotes, results }, null, 2),
-  );
   const winner = pickWinner(results);
-  writeFileSync(
-    "eval/reports/winner.json",
-    JSON.stringify(winner, null, 2),
+  writeFileSync("eval/reports/winner.json", JSON.stringify(winner, null, 2));
+  // Never overwrite the recorded live votes during a replay.
+  if (!replay) {
+    writeFileSync(
+      "eval/reports/raw.json",
+      JSON.stringify({ perCaseVotes, results }, null, 2),
+    );
+  }
+  console.log(
+    `[harness] wrote eval/reports/{report.md,winner.json${replay ? "" : ",raw.json"}}`,
   );
-  console.log("[harness] wrote eval/reports/{report.md,raw.json,winner.json}");
+}
+
+/** Surface every case where gemma4 and qwen3.6 disagreed and how the quorum ruled. */
+function disagreementSection(
+  perCaseVotes: { id: string; shouldPass: boolean; votes: JudgeVote[] }[],
+): string {
+  const rows: string[] = [];
+  for (const c of perCaseVotes) {
+    const g = c.votes.find((v) => v.judgeId.startsWith("gemma4"));
+    const q = c.votes.find((v) => v.judgeId.startsWith("qwen3.6"));
+    if (!g || !q || g.verdict.verified === q.verdict.verified) continue;
+    const lenient = g.verdict.verified ? "gemma4" : "qwen3.6";
+    const note = c.shouldPass
+      ? "quorum is conservative here (a valid case rejected — a false negative, not a payout risk)"
+      : `single \`${lenient}\` would have **wrongly approved** — consensus caught it`;
+    rows.push(
+      `- **${c.id}** (should ${c.shouldPass ? "PASS" : "FAIL"}): ` +
+        `gemma4 ${g.verdict.verified ? "verify" : "reject"}, ` +
+        `qwen3.6 ${q.verdict.verified ? "verify" : "reject"} ` +
+        `→ **2-of-2 quorum REJECTS** (fail-closed); ${note}.`,
+    );
+  }
+  const header = "## Where the two judges disagreed → quorum fails closed\n";
+  if (rows.length === 0) {
+    return header + "\n_No disagreements in this run — both judges agreed on every case._";
+  }
+  return header + "\n" + rows.join("\n");
 }
 
 main().catch((err) => {

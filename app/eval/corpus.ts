@@ -201,4 +201,77 @@ export const CORPUS: CorpusCase[] = [
       "(No lipid panel ordered.)",
     ].join("\n"),
   },
+
+  // ---- BORDERLINE cases (correct verdict = NOT approved) ----
+  // These are deliberately on the edge so the two models are likely to DISAGREE.
+  // Each should fail; if one model is lenient and approves, the 2-of-2 quorum
+  // fails CLOSED on the disagreement — consensus catching a wrongful payout.
+  {
+    id: "ldl-exactly-at-threshold",
+    goalSpec: LDL_GOAL,
+    fileName: "lipid-edge.txt",
+    contentType: "text/plain",
+    shouldPass: false,
+    why: "LDL is exactly 100; the goal is strictly BELOW 100, so 100 does not qualify.",
+    content: [
+      "RIVERSIDE CLINICAL LABORATORY",
+      "Patient: Jordan Avery    Collected: 2026-02-20",
+      "LIPID PANEL",
+      "  LDL Cholesterol ...... 100 mg/dL   (Optimal < 100)",
+    ].join("\n"),
+  },
+  {
+    id: "a1c-exactly-at-threshold",
+    goalSpec: A1C_GOAL,
+    fileName: "a1c-edge.txt",
+    contentType: "text/plain",
+    shouldPass: false,
+    why: "HbA1c is exactly 5.7; the goal is strictly BELOW 5.7, so it does not qualify.",
+    content: [
+      "MERIDIAN HEALTH LABS",
+      "Patient: Sam Okafor    Collected: 2026-02-02",
+      "HEMOGLOBIN A1c .......... 5.7 %   (Normal < 5.7)",
+    ].join("\n"),
+  },
+  {
+    id: "steps-just-under",
+    goalSpec: STEPS_GOAL,
+    fileName: "steps-edge.txt",
+    contentType: "text/plain",
+    shouldPass: false,
+    why: "Average 9,850 steps/day is just under the 10,000 goal — does not qualify.",
+    content: [
+      "ACTIVITY SUMMARY — 30 day period ending 2026-04-30",
+      "Average daily steps: 9,850",
+      "Source: wearable export",
+    ].join("\n"),
+  },
+  {
+    id: "ldl-year-only-date",
+    goalSpec: LDL_GOAL,
+    fileName: "lipid-vague-date.txt",
+    contentType: "text/plain",
+    shouldPass: false,
+    why: "LDL 91 qualifies on value, but the date is a bare '2025' — cannot confirm it is within the last 12 months (today is mid-2026).",
+    content: [
+      "RIVERSIDE CLINICAL LABORATORY",
+      "Patient: Jordan Avery    Collected: 2025",
+      "LIPID PANEL",
+      "  LDL Cholesterol ...... 91 mg/dL   (Optimal < 100)",
+    ].join("\n"),
+  },
+  {
+    id: "ldl-no-patient",
+    goalSpec: LDL_GOAL,
+    fileName: "lipid-anon.txt",
+    contentType: "text/plain",
+    shouldPass: false,
+    why: "LDL 88 qualifies on value, but there is no patient identity — cannot attribute it to the participant.",
+    content: [
+      "RIVERSIDE CLINICAL LABORATORY",
+      "Patient: ____________    Collected: 2026-03-09",
+      "LIPID PANEL",
+      "  LDL Cholesterol ...... 88 mg/dL   (Optimal < 100)",
+    ].join("\n"),
+  },
 ];

@@ -11,7 +11,9 @@
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "eval": "npx --yes tsx eval/run.ts",
+    "eval:demo": "npx --yes tsx eval/run.ts --replay"
   },
   "dependencies": {
     "@circle-fin/x402-batching": "^3.0.4",
