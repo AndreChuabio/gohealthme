@@ -48,9 +48,15 @@ function parseHealthProgress(payload: unknown): HealthProgress {
 
 async function fetchHealthProgress(
   address: `0x${string}`,
+  pool?: PoolInfo,
 ): Promise<HealthState> {
   try {
-    const res = await fetch(`/api/junction/progress?address=${address}`);
+    const windowQuery = pool
+      ? `&start=${Number(pool.periodStart)}&end=${Number(pool.periodEnd)}`
+      : "";
+    const res = await fetch(
+      `/api/junction/progress?address=${address}${windowQuery}`,
+    );
     if (!res.ok) {
       return {
         kind: "unavailable",
@@ -113,10 +119,16 @@ function ConnectButton({ address }: { address: `0x${string}` }) {
   );
 }
 
-function StreakCard({ address }: { address: `0x${string}` }) {
+function StreakCard({
+  address,
+  pool,
+}: {
+  address: `0x${string}`;
+  pool?: PoolInfo;
+}) {
   const healthQuery = useQuery({
-    queryKey: ["junction-progress", address],
-    queryFn: () => fetchHealthProgress(address),
+    queryKey: ["junction-progress", address, pool?.id.toString() ?? "none"],
+    queryFn: () => fetchHealthProgress(address, pool),
     retry: false,
   });
 
@@ -289,7 +301,7 @@ export default function DashboardContent() {
 
   return (
     <div className="space-y-6">
-      <StreakCard address={address} />
+      <StreakCard address={address} pool={joinedQuery.data?.[0]?.pool} />
       <RecentDataCard address={address} />
 
       <section className="space-y-4">

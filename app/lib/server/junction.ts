@@ -167,10 +167,17 @@ export async function getProgress(
   address: string,
   threshold = 75,
   goalDays = 7,
+  windowStartISO?: string,
+  windowEndISO?: string,
 ): Promise<JunctionProgress> {
   const userId = await getOrCreateUser(address);
   const end = new Date();
-  const start = new Date(end.getTime() - 21 * 24 * 3600 * 1000);
+  // Fetch enough history to cover either the rolling window or the pool period.
+  const defaultStart = new Date(end.getTime() - 21 * 24 * 3600 * 1000);
+  const start =
+    windowStartISO !== undefined
+      ? new Date(`${windowStartISO}T00:00:00Z`)
+      : defaultStart;
   const resp = await jx<SleepResponse>(
     `/v2/summary/sleep/${userId}?start_date=${isoDate(start)}&end_date=${isoDate(end)}`,
   );
@@ -200,17 +207,35 @@ export async function getProgress(
   const newest = dates[0];
   const lastNight = byDay.get(newest) ?? null;
 
-  // Count qualifying days within the last `goalDays` window ending at the most
-  // recent scored night. (We count days at/over threshold rather than a strict
-  // consecutive run, so a single missing day of data — common with wearables —
-  // doesn't reset progress to zero.)
+  // Count qualifying days (score >= threshold). With a pool window we count
+  // within [windowStart, min(windowEnd, today)] — progress scoped to the pool's
+  // goal period (counting from when the goal started), not a rolling last-N.
+  // Otherwise fall back to the last `goalDays`. Days over threshold are counted
+  // rather than a strict consecutive run, so a single missing day of wearable
+  // data doesn't reset progress.
   let streakDays = 0;
-  const cursor = new Date(`${newest}T00:00:00Z`);
-  for (let i = 0; i < goalDays; i += 1) {
-    const key = cursor.toISOString().slice(0, 10);
-    const score = byDay.get(key);
-    if (score !== undefined && score >= threshold) streakDays += 1;
-    cursor.setUTCDate(cursor.getUTCDate() - 1);
+  if (windowStartISO !== undefined) {
+    const today = new Date();
+    const winEndDate =
+      windowEndISO !== undefined &&
+      new Date(`${windowEndISO}T00:00:00Z`) < today
+        ? new Date(`${windowEndISO}T00:00:00Z`)
+        : today;
+    const cur = new Date(`${windowStartISO}T00:00:00Z`);
+    while (cur <= winEndDate) {
+      const key = cur.toISOString().slice(0, 10);
+      const score = byDay.get(key);
+      if (score !== undefined && score >= threshold) streakDays += 1;
+      cur.setUTCDate(cur.getUTCDate() + 1);
+    }
+  } else {
+    const cursor = new Date(`${newest}T00:00:00Z`);
+    for (let i = 0; i < goalDays; i += 1) {
+      const key = cursor.toISOString().slice(0, 10);
+      const score = byDay.get(key);
+      if (score !== undefined && score >= threshold) streakDays += 1;
+      cursor.setUTCDate(cursor.getUTCDate() - 1);
+    }
   }
 
   // Baseline week: days 8..14 back from the newest night.

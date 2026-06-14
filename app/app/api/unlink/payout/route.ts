@@ -37,12 +37,19 @@ export async function POST(request: Request) {
     const rewardUsdc =
       typeof body.rewardUsdc === "string" ? body.rewardUsdc : "0.25";
 
+    // Register the treasury under this project before any shielded op. The
+    // engine only issues authorization tokens for addresses it knows; an
+    // unregistered treasury fails token issuance ("token provider failed").
+    // ensureRegistered() is lazy-cached, so this is a no-op after the first call.
+    const treasury = treasuryUnlinkClient();
+    await treasury.ensureRegistered();
+
     const result = await runPrivatePayout({
       goalId,
       recipientUnlinkAddress: unlinkAddress,
       amountBaseUnits: toBaseUnits(rewardUsdc),
       token: ARC_USDC_ADDRESS,
-      treasury: treasuryUnlinkClient(),
+      treasury,
     });
 
     return Response.json(result);

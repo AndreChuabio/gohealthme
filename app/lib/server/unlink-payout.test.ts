@@ -34,6 +34,36 @@ describe("runPrivatePayout", () => {
       treasury.transfer.mock.invocationCallOrder[0],
     );
   });
+  it("releases the claim lock when the payout fails so retry is possible", async () => {
+    const failing = {
+      deposit: vi.fn(async () => {
+        throw new Error("token provider failed");
+      }),
+      transfer: vi.fn(async () => ({ txId: "xfer-1" })),
+    };
+    await expect(
+      runPrivatePayout({
+        goalId: "goal-1",
+        recipientUnlinkAddress: "unlink1recipient",
+        amountBaseUnits: "250000",
+        token: "0xUSDC",
+        treasury: failing,
+      }),
+    ).rejects.toThrow("token provider failed");
+
+    // Lock was rolled back: a follow-up attempt actually runs the payout.
+    const ok = fakeTreasury();
+    const res = await runPrivatePayout({
+      goalId: "goal-1",
+      recipientUnlinkAddress: "unlink1recipient",
+      amountBaseUnits: "250000",
+      token: "0xUSDC",
+      treasury: ok,
+    });
+    expect(res.status).toBe("paid");
+    expect(ok.deposit).toHaveBeenCalledOnce();
+  });
+
   it("is idempotent for the same goalId", async () => {
     const t1 = fakeTreasury();
     const args = {
