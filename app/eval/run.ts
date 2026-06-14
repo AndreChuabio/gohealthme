@@ -9,7 +9,7 @@
 //
 // Run:  npx tsx eval/run.ts        (from the app/ directory)
 
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { Buffer } from "node:buffer";
 import { CORPUS } from "@/eval/corpus";
 import { aggregateVerdicts, type JudgeVote } from "@/lib/server/consensus";
@@ -92,12 +92,16 @@ async function main() {
   let perCaseVotes: PerCase[];
 
   if (replay) {
-    const saved = JSON.parse(readFileSync("eval/reports/raw.json", "utf8")) as {
+    // Prefer the latest live run if present; otherwise fall back to the
+    // committed demo fixture so `npm run eval:demo` works on a fresh checkout.
+    let source = "eval/reports/raw.json";
+    if (!existsSync(source)) source = "eval/sample-run.json";
+    const saved = JSON.parse(readFileSync(source, "utf8")) as {
       perCaseVotes: PerCase[];
     };
     perCaseVotes = saved.perCaseVotes;
     console.log(
-      `[harness] REPLAY — ${perCaseVotes.length} cases from saved raw.json (no enclave calls)`,
+      `[harness] REPLAY — ${perCaseVotes.length} cases from ${source} (no enclave calls)`,
     );
   } else {
     const haveKey = (process.env.CONFIDENTIAL_AI_API_KEY ?? "").trim() !== "";
