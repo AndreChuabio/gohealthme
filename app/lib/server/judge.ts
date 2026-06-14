@@ -106,79 +106,133 @@ export async function submitInference(
   fileName: string,
   contentType: SupportedContentType,
 ): Promise<string> {
+  return submitInferenceRaw({
+    model: ATTESTER_MODEL,
+    systemPrompt: SYSTEM_PROMPT,
+    prompt: userPrompt(goalSpec),
+    resource: {
+      filename: fileName,
+      content_type: contentType,
+      content_base64: fileBase64,
+    },
+  });
+}
+
+/** Parameters for a single low-level attester inference (one panel judge). */
+export interface RawInferenceParams {
+  model: string;
+  systemPrompt: string;
+  prompt: string;
+  /** Optional uploaded document. Omit for goal-only (no-evidence) judging. */
+  resource?: InferenceResource;
+  /** 0 for deterministic single-shot; >0 to draw varied repeated samples. */
+  temperature?: number;
+}
+
+/** Options controlling fallback + retry behavior of submitInferenceRaw. */
+export interface SubmitOptions {
+  /**
+   * When true (default), a missing key or a submit failure resolves to a
+   * deterministic mock id so the product demo keeps flowing. The eval harness
+   * passes false: a failure must surface as a thrown error (which the panel
+   * records as a fail-closed error vote), NEVER as a silent mock the consensus
+   * would read as verified=true.
+   */
+  allowMock?: boolean;
+  /** Retries on HTTP 429 (per-key rate limit) before giving up. Default 4. */
+  maxRetries?: number;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Submit one inference with explicit model/prompt/temperature so the consensus
+ * panel can vary judges across {model} x {prompt} x {sample}. Retries on 429
+ * (per-key rate limit) with exponential backoff. On a hard failure it either
+ * falls back to a mock id (product) or throws (harness), per options.allowMock.
+ */
+export async function submitInferenceRaw(
+  params: RawInferenceParams,
+  options: SubmitOptions = {},
+): Promise<string> {
+  const allowMock = options.allowMock ?? true;
+  const maxRetries = options.maxRetries ?? 4;
+
+  const fallback = (message: string): string => {
+    if (allowMock) {
+      console.warn(`[attester] ${message} — falling back to mock.`);
+      return mockId();
+    }
+    throw new Error(`[attester] ${message}`);
+  };
+
   const apiKey = optionalEnv("CONFIDENTIAL_AI_API_KEY", "");
   if (apiKey === "") {
-    console.warn(
-      "[attester] CONFIDENTIAL_AI_API_KEY not set — using DETERMINISTIC MOCK " +
-        "verdict (verified=true, confidence=high). Set CONFIDENTIAL_AI_API_KEY " +
-        "in gohealthme/.env for live TEE inference.",
-    );
-    return mockId();
+    return fallback("CONFIDENTIAL_AI_API_KEY not set");
   }
 
-  const resource: InferenceResource = {
-    filename: fileName,
-    content_type: contentType,
-    content_base64: fileBase64,
+  const body: Record<string, unknown> = {
+    model: params.model,
+    system_prompt: params.systemPrompt,
+    prompt: params.prompt,
   };
-  const body = {
-    model: ATTESTER_MODEL,
-    system_prompt: SYSTEM_PROMPT,
-    prompt: userPrompt(goalSpec),
-    resources: [resource],
-  };
-
-  let res: Response;
-  try {
-    res = await fetch(`${ATTESTER_BASE_URL}/v1/inference`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify(body),
-    });
-  } catch (err) {
-    console.error(
-      "[attester] inference submit failed to send, falling back to mock:",
-      String(err),
-    );
-    return mockId();
+  if (params.resource) body.resources = [params.resource];
+  if (typeof params.temperature === "number") {
+    body.temperature = params.temperature;
   }
 
-  if (!res.ok) {
-    const detail = await res.text().catch(() => "");
-    console.error(
-      `[attester] inference submit returned HTTP ${res.status}, falling back ` +
-        `to mock: ${detail.slice(0, 300)}`,
-    );
-    return mockId();
-  }
+  for (let attempt = 0; ; attempt++) {
+    let res: Response;
+    try {
+      res = await fetch(`${ATTESTER_BASE_URL}/v1/inference`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      return fallback(`inference submit failed to send: ${String(err)}`);
+    }
 
-  let payload: { id?: unknown; status?: unknown };
-  try {
-    payload = (await res.json()) as typeof payload;
-  } catch (err) {
-    console.error(
-      "[attester] inference submit returned unreadable JSON, falling back to mock:",
-      String(err),
-    );
-    return mockId();
-  }
+    // 429 = per-key rate limit: back off and retry rather than give up.
+    if (res.status === 429 && attempt < maxRetries) {
+      const waitMs = 1000 * 2 ** attempt;
+      console.warn(
+        `[attester] 429 rate-limited; retry ${attempt + 1}/${maxRetries} in ${waitMs}ms`,
+      );
+      await sleep(waitMs);
+      continue;
+    }
 
-  if (typeof payload.id !== "string" || payload.id.trim() === "") {
-    console.error(
-      "[attester] inference submit response had no id, falling back to mock.",
-    );
-    return mockId();
-  }
+    if (!res.ok) {
+      const detail = await res.text().catch(() => "");
+      return fallback(
+        `inference submit returned HTTP ${res.status}: ${detail.slice(0, 300)}`,
+      );
+    }
 
-  console.log(
-    `[attester] inference submitted id=${payload.id} status=${String(
-      payload.status ?? "queued",
-    )}`,
-  );
-  return payload.id;
+    let payload: { id?: unknown; status?: unknown };
+    try {
+      payload = (await res.json()) as typeof payload;
+    } catch (err) {
+      return fallback(`inference submit returned unreadable JSON: ${String(err)}`);
+    }
+
+    if (typeof payload.id !== "string" || payload.id.trim() === "") {
+      return fallback("inference submit response had no id");
+    }
+
+    console.log(
+      `[attester] inference submitted id=${payload.id} status=${String(
+        payload.status ?? "queued",
+      )}`,
+    );
+    return payload.id;
+  }
 }
 
 /**
