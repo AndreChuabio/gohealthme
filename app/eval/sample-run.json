@@ -1,0 +1,459 @@
+{
+  "perCaseVotes": [
+    {
+      "id": "ldl-pass",
+      "shouldPass": true,
+      "votes": [
+        {
+          "judgeId": "gemma4/strict/0",
+          "ok": true,
+          "verdict": {
+            "verified": false,
+            "confidence": "high",
+            "reason": "The document is dated 2026-03-02, which is outside the required timeframe of the last 12 months."
+          }
+        },
+        {
+          "judgeId": "qwen3.6/strict/0",
+          "ok": true,
+          "verdict": {
+            "verified": true,
+            "confidence": "high",
+            "reason": "The lab report dated 2026-03-02 shows an LDL cholesterol level of 92 mg/dL, which satisfies the goal of being below 100 mg/dL."
+          }
+        }
+      ]
+    },
+    {
+      "id": "a1c-pass",
+      "shouldPass": true,
+      "votes": [
+        {
+          "judgeId": "gemma4/strict/0",
+          "ok": true,
+          "verdict": {
+            "verified": false,
+            "confidence": "low",
+            "reason": "The HbA1c result (5.4%) is below 5.7%, but the document does not provide a current date, making it impossible to verify if the test was conducted in the last 12 months."
+          }
+        },
+        {
+          "judgeId": "qwen3.6/strict/0",
+          "ok": true,
+          "verdict": {
+            "verified": true,
+            "confidence": "high",
+            "reason": "The lab report explicitly states an HbA1c level of 5.4%, which is below the required 5.7%. The document is a valid laboratory report with a collection date of 2026-01-19, satisfying the timeframe criterion."
+          }
+        }
+      ]
+    },
+    {
+      "id": "flu-pass",
+      "shouldPass": true,
+      "votes": [
+        {
+          "judgeId": "gemma4/strict/0",
+          "ok": true,
+          "verdict": {
+            "verified": false,
+            "confidence": "low",
+            "reason": "The document confirms receipt of an influenza vaccination on 2025-10-08, but it does not provide the necessary context (the reference date or definition of 'current season') to strictly verify if this date falls within the current season."
+          }
+        },
+        {
+          "judgeId": "qwen3.6/strict/0",
+          "ok": true,
+          "verdict": {
+            "verified": true,
+            "confidence": "high",
+            "reason": "The document is a valid immunization record confirming the patient received a quadrivalent influenza vaccine (Fluzone) on October 8, 2025, which falls within the standard timeframe for seasonal influenza vaccination."
+          }
+        }
+      ]
+    },
+    {
+      "id": "steps-pass",
+      "shouldPass": true,
+      "votes": [
+        {
+          "judgeId": "gemma4/strict/0",
+          "ok": true,
+          "verdict": {
+            "verified": true,
+            "confidence": "high",
+            "reason": "The document states the average daily steps over the 30-day period was 12,430, which is greater than 10,000."
+          }
+        },
+        {
+          "judgeId": "qwen3.6/strict/0",
+          "ok": true,
+          "verdict": {
+            "verified": true,
+            "confidence": "high",
+            "reason": "The document explicitly states an average daily step count of 12,430 for the reporting period, which exceeds the goal of 10,000 steps per day."
+          }
+        }
+      ]
+    },
+    {
+      "id": "ldl-over-threshold",
+      "shouldPass": false,
+      "votes": [
+        {
+          "judgeId": "gemma4/strict/0",
+          "ok": true,
+          "verdict": {
+            "verified": false,
+            "confidence": "high",
+            "reason": "The recorded LDL Cholesterol is 142 mg/dL, which is not below the required threshold of 100 mg/dL."
+          }
+        },
+        {
+          "judgeId": "qwen3.6/strict/0",
+          "ok": true,
+          "verdict": {
+            "verified": false,
+            "confidence": "high",
+            "reason": "The lab report shows an LDL cholesterol level of 142 mg/dL, which is above the required threshold of below 100 mg/dL."
+          }
+        }
+      ]
+    },
+    {
+      "id": "ldl-expired",
+      "shouldPass": false,
+      "votes": [
+        {
+          "judgeId": "gemma4/strict/0",
+          "ok": true,
+          "verdict": {
+            "verified": false,
+            "confidence": "high",
+            "reason": "The lab report date (2019-06-30) is not within the last 12 months."
+          }
+        },
+        {
+          "judgeId": "qwen3.6/strict/0",
+          "ok": true,
+          "verdict": {
+            "verified": false,
+            "confidence": "high",
+            "reason": "The lab report is expired. The collection date is 2019-06-30, which does not fall within the last 12 months."
+          }
+        }
+      ]
+    },
+    {
+      "id": "a1c-diabetic",
+      "shouldPass": false,
+      "votes": [
+        {
+          "judgeId": "gemma4/strict/0",
+          "ok": true,
+          "verdict": {
+            "verified": false,
+            "confidence": "high",
+            "reason": "The HbA1c result (6.8%) is higher than the required threshold of below 5.7%."
+          }
+        },
+        {
+          "judgeId": "qwen3.6/strict/0",
+          "ok": true,
+          "verdict": {
+            "verified": false,
+            "confidence": "high",
+            "reason": "The lab report shows an HbA1c level of 6.8%, which exceeds the goal requirement of being below 5.7%. Therefore, the condition is not satisfied."
+          }
+        }
+      ]
+    },
+    {
+      "id": "steps-too-low",
+      "shouldPass": false,
+      "votes": [
+        {
+          "judgeId": "gemma4/strict/0",
+          "ok": true,
+          "verdict": {
+            "verified": false,
+            "confidence": "high",
+            "reason": "The document reports an average daily step count of 4,210, which is below the required 10,000 steps per day."
+          }
+        },
+        {
+          "judgeId": "qwen3.6/strict/0",
+          "ok": true,
+          "verdict": {
+            "verified": false,
+            "confidence": "high",
+            "reason": "The provided document shows an average daily step count of 4,210, which does not meet the goal of averaging at least 10,000 steps per day."
+          }
+        }
+      ]
+    },
+    {
+      "id": "off-topic-receipt",
+      "shouldPass": false,
+      "votes": [
+        {
+          "judgeId": "gemma4/strict/0",
+          "ok": true,
+          "verdict": {
+            "verified": false,
+            "confidence": "high",
+            "reason": "The document provided is a grocery receipt and does not contain any medical information or lab results regarding LDL cholesterol."
+          }
+        },
+        {
+          "judgeId": "qwen3.6/strict/0",
+          "ok": true,
+          "verdict": {
+            "verified": false,
+            "confidence": "low",
+            "reason": "The provided document is a grocery receipt and contains no medical or laboratory information regarding LDL cholesterol levels."
+          }
+        }
+      ]
+    },
+    {
+      "id": "results-pending",
+      "shouldPass": false,
+      "votes": [
+        {
+          "judgeId": "gemma4/strict/0",
+          "ok": true,
+          "verdict": {
+            "verified": false,
+            "confidence": "high",
+            "reason": "The document shows the HbA1c test is PENDING, and no result value is provided."
+          }
+        },
+        {
+          "judgeId": "qwen3.6/strict/0",
+          "ok": true,
+          "verdict": {
+            "verified": false,
+            "confidence": "high",
+            "reason": "The document is an order confirmation stating the HbA1c result is pending and not yet available, providing no numerical value to verify against the <5.7% threshold."
+          }
+        }
+      ]
+    },
+    {
+      "id": "unreadable",
+      "shouldPass": false,
+      "votes": [
+        {
+          "judgeId": "gemma4/strict/0",
+          "ok": true,
+          "verdict": {
+            "verified": false,
+            "confidence": "low",
+            "reason": "The document is unreadable and appears corrupted, making it impossible to verify the LDL cholesterol level."
+          }
+        },
+        {
+          "judgeId": "qwen3.6/strict/0",
+          "ok": true,
+          "verdict": {
+            "verified": false,
+            "confidence": "low",
+            "reason": "The document is unreadable and corrupted, containing only garbled binary data, making it impossible to verify lab results."
+          }
+        }
+      ]
+    },
+    {
+      "id": "wrong-test",
+      "shouldPass": false,
+      "votes": [
+        {
+          "judgeId": "gemma4/strict/0",
+          "ok": true,
+          "verdict": {
+            "verified": false,
+            "confidence": "high",
+            "reason": "The document is a Complete Blood Count (CBC) and explicitly states that no lipid panel was ordered, meaning LDL cholesterol results are not present."
+          }
+        },
+        {
+          "judgeId": "qwen3.6/strict/0",
+          "ok": true,
+          "verdict": {
+            "verified": false,
+            "confidence": "high",
+            "reason": "The provided document is a Complete Blood Count (CBC) and explicitly notes '(No lipid panel ordered.)'. It contains no LDL cholesterol measurement, so the goal cannot be verified or satisfied."
+          }
+        }
+      ]
+    },
+    {
+      "id": "ldl-exactly-at-threshold",
+      "shouldPass": false,
+      "votes": [
+        {
+          "judgeId": "gemma4/strict/0",
+          "ok": true,
+          "verdict": {
+            "verified": false,
+            "confidence": "high",
+            "reason": "The measured LDL Cholesterol is 100 mg/dL, which is not strictly below 100 mg/dL as required by the goal."
+          }
+        },
+        {
+          "judgeId": "qwen3.6/strict/0",
+          "ok": true,
+          "verdict": {
+            "verified": false,
+            "confidence": "high",
+            "reason": "The reported LDL cholesterol is exactly 100 mg/dL, which does not satisfy the strict requirement of being below 100 mg/dL."
+          }
+        }
+      ]
+    },
+    {
+      "id": "a1c-exactly-at-threshold",
+      "shouldPass": false,
+      "votes": [
+        {
+          "judgeId": "gemma4/strict/0",
+          "ok": true,
+          "verdict": {
+            "verified": false,
+            "confidence": "high",
+            "reason": "The HbA1c result is 5.7%, which does not satisfy the requirement of being strictly below 5.7%."
+          }
+        },
+        {
+          "judgeId": "qwen3.6/strict/0",
+          "ok": true,
+          "verdict": {
+            "verified": false,
+            "confidence": "high",
+            "reason": "The reported HbA1c value is exactly 5.7%, which does not strictly meet the condition of being below 5.7%."
+          }
+        }
+      ]
+    },
+    {
+      "id": "steps-just-under",
+      "shouldPass": false,
+      "votes": [
+        {
+          "judgeId": "gemma4/strict/0",
+          "ok": true,
+          "verdict": {
+            "verified": false,
+            "confidence": "high",
+            "reason": "The document reports an average daily step count of 9,850, which does not meet the goal of averaging at least 10,000 steps per day."
+          }
+        },
+        {
+          "judgeId": "qwen3.6/strict/0",
+          "ok": true,
+          "verdict": {
+            "verified": false,
+            "confidence": "high",
+            "reason": "The document explicitly states the average daily steps were 9,850, which does not meet the goal of averaging at least 10,000 steps per day."
+          }
+        }
+      ]
+    },
+    {
+      "id": "ldl-year-only-date",
+      "shouldPass": false,
+      "votes": [
+        {
+          "judgeId": "gemma4/strict/0",
+          "ok": true,
+          "verdict": {
+            "verified": false,
+            "confidence": "low",
+            "reason": "The document is missing the month and day of collection, making it impossible to strictly verify if the report was obtained within the last 12 months."
+          }
+        },
+        {
+          "judgeId": "qwen3.6/strict/0",
+          "ok": true,
+          "verdict": {
+            "verified": true,
+            "confidence": "medium",
+            "reason": "The lab report clearly indicates an LDL cholesterol level of 91 mg/dL, satisfying the below 100 mg/dL criterion. The collection date is listed as 2025, which aligns with the recent timeframe, though the lack of a specific month and day limits confidence to medium."
+          }
+        }
+      ]
+    },
+    {
+      "id": "ldl-no-patient",
+      "shouldPass": false,
+      "votes": [
+        {
+          "judgeId": "gemma4/strict/0",
+          "ok": true,
+          "verdict": {
+            "verified": false,
+            "confidence": "high",
+            "reason": "The collection date (2026-03-09) falls outside the specified last 12 months timeframe."
+          }
+        },
+        {
+          "judgeId": "qwen3.6/strict/0",
+          "ok": true,
+          "verdict": {
+            "verified": true,
+            "confidence": "high",
+            "reason": "The document is a clinical laboratory report dated 2026-03-09 that explicitly reports an LDL Cholesterol level of 88 mg/dL, which satisfies the requirement of being below 100 mg/dL."
+          }
+        }
+      ]
+    }
+  ],
+  "results": [
+    {
+      "label": "gemma4 · strict (single-shot, baseline)",
+      "panelSize": 1,
+      "quorum": "1-of-1 @ medium",
+      "score": {
+        "tp": 1,
+        "tn": 13,
+        "fp": 0,
+        "fn": 3,
+        "total": 17,
+        "accuracy": 0.8235294117647058,
+        "falsePositiveRate": 0,
+        "falseNegativeRate": 0.75
+      }
+    },
+    {
+      "label": "qwen3.6 · strict (single-shot)",
+      "panelSize": 1,
+      "quorum": "1-of-1 @ medium",
+      "score": {
+        "tp": 4,
+        "tn": 11,
+        "fp": 2,
+        "fn": 0,
+        "total": 17,
+        "accuracy": 0.8823529411764706,
+        "falsePositiveRate": 0.15384615384615385,
+        "falseNegativeRate": 0
+      }
+    },
+    {
+      "label": "2-model · strict · unanimous (both must agree)",
+      "panelSize": 2,
+      "quorum": "2-of-2 @ medium",
+      "score": {
+        "tp": 1,
+        "tn": 13,
+        "fp": 0,
+        "fn": 3,
+        "total": 17,
+        "accuracy": 0.8235294117647058,
+        "falsePositiveRate": 0,
+        "falseNegativeRate": 0.75
+      }
+    }
+  ]
+}

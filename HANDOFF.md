@@ -50,6 +50,34 @@ submitted. The submit decision is final at the Sunday form.
 - Demo reset (fresh deploy + seed 3 pools + sync env): `./scripts/demo-reset.sh` from repo root.
 - Happy-path proof (live on Arc, ~90s): `./scripts/happy-path-test.sh`.
 - CRE dry-run (offline, no auth): `cd cre && bun run dry-run`. Live sim needs Chainlink CLI auth (see Open items).
+- Arbiter reliability harness: `cd app && npm run eval:demo` (instant replay of a recorded run, no enclave calls) or `npm run eval` (live, slow). `npm test` runs the 34 unit tests. See "Arbiter reliability harness" below.
+
+## Arbiter reliability harness (`app/eval/`, added 2026-06-14, branch `feat/attestor-reliability-harness`)
+
+The Confidential AI Attester is the oracle that gates real USDC, so this harness measures how
+trustworthy its verdicts are and hardens it with **multi-judge consensus**. Synthetic lab reports
+only — **no real PHI**.
+
+- **What it does:** runs a labeled corpus through the attester, scores each arbiter config. Headline
+  metric = **false-positive rate** (a wrongful "verified" = a wrongful payout). The enclave exposes
+  two models (`gemma4`, `qwen3.6`); a panel varies `{model} × {prompt} × {sample}` and a **K-of-N
+  quorum** aggregates them, **failing closed** on disagreement.
+- **Run:** `cd app` then `npm run eval:demo` (instant replay from `app/eval/sample-run.json`, no
+  enclave calls — use this for demos) or `npm run eval` (live; slow because the shared dev-preview
+  enclave queues jobs for minutes). `npm test` runs 34 unit tests.
+- **Result (17 cases, live verdicts):** single `qwen3.6` = **15% false-positive** (wrongly approved 2
+  borderline cases: year-only date, no patient name); single strict `gemma4` = 0% FP but over-rejected
+  3 valid reports; **2-of-2 quorum = 0% FP and caught both of qwen's wrongful approvals.** Takeaway:
+  no single model is a safe money oracle; require agreement.
+- **Files:** `app/lib/server/consensus.ts` (pure fail-closed quorum), `panel.ts` (judge fan-out),
+  `judge.ts` (`submitInferenceRaw` w/ `allowMock` + 429 backoff — a rate-limit fails CLOSED, never a
+  mock approval), `app/eval/{corpus,score,report,run}.ts`, `app/eval/sample-run.json` (demo fixture).
+- **Gotcha found:** a 429 per-key rate-limit was silently becoming a mock `verified=true`. The
+  attester's per-key limit is on *pending* jobs and the queue can take ~5 min/job; the harness uses
+  bounded concurrency + backoff + a 12-min poll timeout and fails closed on error.
+- **Follow-ups (not done):** (1) **production adoption** — wire the 2-of-2 quorum into `judge.ts` +
+  the evidence flow and switch the default model; (2) **Veris** simulation (auth validated with
+  `VERIS_API_KEY`; `veris env push` needs Docker, which wasn't available — parked).
 
 ## Env (IMPORTANT gotcha)
 

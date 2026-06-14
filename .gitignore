@@ -19,3 +19,6 @@ contracts/broadcast/
 __pycache__/
 .vercel
 .env*
+
+# arbiter reliability harness generated outputs
+app/eval/reports/

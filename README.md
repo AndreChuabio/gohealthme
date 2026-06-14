@@ -39,10 +39,25 @@ Chains: Arc testnet (chain id 5042002, USDC-native) for the product and settleme
 
 Privacy invariant: raw health data never touches the chain — the Confidential AI Attester judges it inside a TEE and only the signed verdict (verified / confidence / digest) is recorded on-chain.
 
+## Arbiter reliability (eval harness)
+
+The attester is the oracle that gates real USDC, so we measure how trustworthy its verdicts are and harden it with **multi-judge consensus**. `app/eval/` runs synthetic lab reports (no real PHI) through the attester and scores each arbiter config; the headline metric is the **false-positive rate** — a wrongful "verified" is a wrongful payout.
+
+The enclave exposes two models (`gemma4`, `qwen3.6`); the panel varies `{model} × {prompt} × {sample}` and a **K-of-N quorum** aggregates them, **failing closed** on disagreement.
+
+Result (17 synthetic cases, live verdicts): a single `qwen3.6` wrongly approved 2 borderline cases (15% false-positive rate); a single strict `gemma4` over-rejected valid reports; the **2-of-2 quorum had 0% false positives and caught both wrongful approvals**. No single model is a safe money oracle — requiring agreement is.
+
+```
+cd app
+npm run eval:demo   # instant replay of a recorded run (no enclave calls)
+npm run eval        # live run against the attester (slow — shared enclave queue)
+npm test            # unit tests (consensus, panel, scorer)
+```
+
 ## Repo layout
 
 - `contracts/` — Foundry: `HealthPools.sol` (pools, World ID nullifier gating, settle, backing, multipliers) and `HealthVerdict.sol` (Chainlink verdict registry + `onReport` receiver); tests; deploy script
-- `app/` — Next.js App Router: frontend and API routes (World verify, WHOOP, oracle signer)
+- `app/` — Next.js App Router: frontend and API routes (World verify, WHOOP, oracle signer). `app/lib/server/` holds the attester client + consensus; `app/eval/` is the arbiter reliability harness.
 - `cre/` — Chainlink CRE goal-verification workflow (Confidential AI Attester callback pattern)
 - `scripts/` — `demo-reset.sh` (clean redeploy + seed) and `happy-path-test.sh` (live end-to-end proof)
 
