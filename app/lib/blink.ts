@@ -32,6 +32,14 @@ export const BLINK_USDC_DECIMALS = 6;
 
 // ---------------------------------------------------------------------- config
 
+/**
+ * Blink environment. Sandbox routes the hosted flow to pay-sandbox.blink.cash
+ * (where testnet merchants live); production routes to pay.blink.cash. A
+ * sandbox merchant is invisible to production and vice versa, so this MUST
+ * match where the merchant was registered.
+ */
+export type BlinkEnvironment = "sandbox" | "production";
+
 export interface BlinkConfig {
   /**
    * Endpoint that signs the deposit request server-side (ECDSA P-256). Blink
@@ -42,6 +50,8 @@ export interface BlinkConfig {
   usdcAddress: `0x${string}`;
   /** Base Sepolia address that receives the pulled USDC (our merchant wallet). */
   merchantAddress: `0x${string}`;
+  /** Which Blink environment the merchant is registered in. */
+  environment: BlinkEnvironment;
 }
 
 const HEX_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
@@ -71,12 +81,18 @@ export function getBlinkConfig(): BlinkConfig | null {
   const merchantAddress = readAddress(
     process.env.NEXT_PUBLIC_BLINK_MERCHANT_ADDRESS,
   );
+  // Default to sandbox: testnet merchants are registered there. Override with
+  // NEXT_PUBLIC_BLINK_ENV=production only when using a production merchant.
+  const environment: BlinkEnvironment =
+    process.env.NEXT_PUBLIC_BLINK_ENV === "production"
+      ? "production"
+      : "sandbox";
 
   if (signerEndpoint === "" || usdcAddress === null || merchantAddress === null) {
     return null;
   }
 
-  return { signerEndpoint, usdcAddress, merchantAddress };
+  return { signerEndpoint, usdcAddress, merchantAddress, environment };
 }
 
 export const BLINK_CONFIGURED: boolean = getBlinkConfig() !== null;
@@ -211,8 +227,14 @@ export async function startBlinkTopUp(
 
   const deposit = new Deposit({
     signer: config.signerEndpoint,
-    // Go straight to the Blink one-tap surface rather than the address-picker.
-    enableFullWidget: false,
+    // Route the hosted flow to the environment the merchant is registered in
+    // (sandbox -> pay-sandbox.blink.cash). Mismatch yields MERCHANT_NOT_FOUND.
+    environment: config.environment,
+    // Show the full entry screen: it offers deposit addresses (pay from any
+    // wallet or exchange) alongside the Blink one-tap path. The one-tap-only
+    // surface assumes an already-funded Blink account, which a first-time user
+    // does not have, so it dead-ends at "no tokens to link".
+    enableFullWidget: true,
   });
 
   const result = await deposit.requestDeposit({

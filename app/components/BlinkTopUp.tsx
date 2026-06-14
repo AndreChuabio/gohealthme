@@ -60,7 +60,7 @@ export default function BlinkTopUp({
     );
   }
 
-  const resolvedAmount = amountUsdc !== undefined && amountUsdc > 0 ? amountUsdc : 25;
+  const resolvedAmount = amountUsdc !== undefined && amountUsdc > 0 ? amountUsdc : 10;
 
   const startTopUp = async () => {
     // "opening" covers both the widget tap and the in-flight settlement: the
