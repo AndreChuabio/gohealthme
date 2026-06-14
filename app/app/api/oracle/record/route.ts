@@ -2,7 +2,7 @@
 // Headers: x-oracle-secret: <ORACLE_API_SECRET>
 // Body: { poolId, address, goalDays?, threshold? }
 //
-// Reads WHOOP progress for the address, derives the verdict
+// Reads Junction (health-data) progress for the address, derives the verdict
 // (streak >= goalDays) and multiplier (base 10000, +2500 comeback bonus
 // when the preceding week averaged under 60, capped at 30000), refuses
 // addresses without a verified World ID record for the pool, and submits
@@ -11,7 +11,7 @@
 
 import { timingSafeEqual } from "crypto";
 import { isAddress, type Address } from "viem";
-import { getProgress, getTokensForAddress } from "@/lib/server/whoop";
+import { getProgress, isConnected } from "@/lib/server/junction";
 import { getVerification } from "@/lib/server/world";
 import { deriveMultiplierBps, recordResult } from "@/lib/server/oracle";
 import { requireEnv } from "@/lib/server/env";
@@ -64,11 +64,11 @@ export async function POST(request: Request) {
       );
     }
 
-    const tokens = await getTokensForAddress(address);
-    if (tokens === null) {
+    const connected = await isConnected(address);
+    if (!connected) {
       return jsonError(
         404,
-        `No WHOOP connection for ${address}. Start at /api/whoop/login?address=${address}`,
+        `No health-data provider connected for ${address}. Connect via POST /api/junction/link.`,
       );
     }
 
