@@ -103,7 +103,15 @@ function resultLabel(p: ParticipantInfo): { text: string; tone: "accent" | "mute
   return { text: "Goal missed", tone: "muted" };
 }
 
-function ConnectButton({ address }: { address: `0x${string}` }) {
+function ConnectButton({
+  address,
+  label = "Connect health data",
+  secondary = false,
+}: {
+  address: `0x${string}`;
+  label?: string;
+  secondary?: boolean;
+}) {
   return (
     <button
       type="button"
@@ -112,9 +120,13 @@ function ConnectButton({ address }: { address: `0x${string}` }) {
           console.error(err);
         });
       }}
-      className="mt-3 rounded-xl bg-accent-strong px-4 py-2 text-sm font-semibold text-background hover:bg-accent"
+      className={
+        secondary
+          ? "mt-3 rounded-xl border border-edge px-4 py-2 text-sm font-semibold text-foreground hover:border-accent/50"
+          : "mt-3 rounded-xl bg-accent-strong px-4 py-2 text-sm font-semibold text-background hover:bg-accent"
+      }
     >
-      Connect health data
+      {label}
     </button>
   );
 }
@@ -176,6 +188,11 @@ function StreakCard({
               ? ` · last sync ${healthQuery.data.progress.lastSync}`
               : ""}
           </p>
+          <ConnectButton
+            address={address}
+            label="Connect / switch provider"
+            secondary
+          />
         </div>
       )}
     </section>
