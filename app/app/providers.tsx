@@ -58,6 +58,13 @@ export default function Providers({ children }: { children: ReactNode }) {
         // own signature separately, so no login signature is needed.
         initialAuthenticationMode: "connect-only",
         walletConnectors: [EthereumWalletConnectors],
+        // Dynamic's default (useMetamaskSdk: true) routes MetaMask through its
+        // new multichain "connect" SDK, which establishes a MetaMask connection
+        // but does NOT bind the wallet into Dynamic state in connect-only mode —
+        // primaryWallet/userWallets stay empty, so the app never sees the wallet
+        // and sign-in never flips. Forcing the classic injected/EIP-6963
+        // connector makes primaryWallet populate reliably.
+        useMetamaskSdk: false,
         overrides: { evmNetworks: [arcEvmNetwork] },
         // Don't show Dynamic's per-transaction confirmation modal for the
         // embedded (email) wallet — email-login users sign without an extra
