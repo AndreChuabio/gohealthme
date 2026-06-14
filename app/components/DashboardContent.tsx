@@ -18,7 +18,7 @@ interface JoinedPool {
   participant: ParticipantInfo;
 }
 
-interface WhoopProgress {
+interface HealthProgress {
   connected: boolean;
   metric: string | null;
   streakDays: number | null;
@@ -26,11 +26,11 @@ interface WhoopProgress {
   lastSync: string | null;
 }
 
-type WhoopState =
-  | { kind: "ok"; progress: WhoopProgress }
+type HealthState =
+  | { kind: "ok"; progress: HealthProgress }
   | { kind: "unavailable"; reason: string };
 
-function parseWhoopProgress(payload: unknown): WhoopProgress {
+function parseHealthProgress(payload: unknown): HealthProgress {
   const record =
     typeof payload === "object" && payload !== null
       ? (payload as Record<string, unknown>)
@@ -46,25 +46,36 @@ function parseWhoopProgress(payload: unknown): WhoopProgress {
   };
 }
 
-async function fetchWhoopProgress(): Promise<WhoopState> {
+async function fetchHealthProgress(
+  address: `0x${string}`,
+): Promise<HealthState> {
   try {
-    const res = await fetch("/api/whoop/progress");
+    const res = await fetch(`/api/junction/progress?address=${address}`);
     if (!res.ok) {
       return {
         kind: "unavailable",
-        reason:
-          res.status === 404
-            ? "The WHOOP progress feed is not live yet."
-            : `WHOOP progress feed responded ${res.status}.`,
+        reason: `Health progress feed responded ${res.status}.`,
       };
     }
-    return { kind: "ok", progress: parseWhoopProgress(await res.json()) };
+    return { kind: "ok", progress: parseHealthProgress(await res.json()) };
   } catch {
     return {
       kind: "unavailable",
-      reason: "Could not reach the WHOOP progress feed.",
+      reason: "Could not reach the health progress feed.",
     };
   }
+}
+
+/** Open Junction Link to connect a provider (WHOOP, Oura, Fitbit, Garmin…). */
+async function connectHealthData(address: `0x${string}`): Promise<void> {
+  const res = await fetch("/api/junction/link", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ address }),
+  });
+  if (!res.ok) throw new Error(`Link token request failed (${res.status}).`);
+  const { linkUrl } = (await res.json()) as { linkUrl?: string };
+  if (typeof linkUrl === "string") window.open(linkUrl, "_blank", "noopener");
 }
 
 async function fetchJoinedPools(address: `0x${string}`): Promise<JoinedPool[]> {
@@ -86,48 +97,71 @@ function resultLabel(p: ParticipantInfo): { text: string; tone: "accent" | "mute
   return { text: "Goal missed", tone: "muted" };
 }
 
-function StreakCard() {
-  const whoopQuery = useQuery({
-    queryKey: ["whoop-progress"],
-    queryFn: fetchWhoopProgress,
+function ConnectButton({ address }: { address: `0x${string}` }) {
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        void connectHealthData(address).catch((err) => {
+          console.error(err);
+        });
+      }}
+      className="mt-3 rounded-xl bg-accent-strong px-4 py-2 text-sm font-semibold text-background hover:bg-accent"
+    >
+      Connect health data
+    </button>
+  );
+}
+
+function StreakCard({ address }: { address: `0x${string}` }) {
+  const healthQuery = useQuery({
+    queryKey: ["junction-progress", address],
+    queryFn: () => fetchHealthProgress(address),
     retry: false,
   });
 
   return (
     <section className="rounded-2xl border border-edge bg-surface p-5">
       <h2 className="text-lg font-semibold">Streak progress</h2>
-      {whoopQuery.isLoading ? (
+      {healthQuery.isLoading ? (
         <div className="mt-3 space-y-2">
           <Skeleton className="h-8 w-40" />
           <Skeleton className="h-4 w-64" />
         </div>
-      ) : whoopQuery.data === undefined ||
-        whoopQuery.data.kind === "unavailable" ? (
-        <p className="mt-3 rounded-xl border border-dashed border-edge p-4 text-sm text-muted">
-          {whoopQuery.data?.kind === "unavailable"
-            ? whoopQuery.data.reason
-            : "Streak feed unavailable."}{" "}
-          Connect your wearable to see verified streak progress here.
-        </p>
-      ) : !whoopQuery.data.progress.connected ? (
-        <p className="mt-3 rounded-xl border border-dashed border-edge p-4 text-sm text-muted">
-          No wearable connected yet. Link WHOOP to start tracking your streak
-          toward the bounty.
-        </p>
+      ) : healthQuery.data === undefined ||
+        healthQuery.data.kind === "unavailable" ? (
+        <>
+          <p className="mt-3 rounded-xl border border-dashed border-edge p-4 text-sm text-muted">
+            {healthQuery.data?.kind === "unavailable"
+              ? healthQuery.data.reason
+              : "Streak feed unavailable."}{" "}
+            Connect a wearable (WHOOP, Oura, Fitbit, Garmin…) to see verified
+            streak progress here.
+          </p>
+          <ConnectButton address={address} />
+        </>
+      ) : !healthQuery.data.progress.connected ? (
+        <>
+          <p className="mt-3 rounded-xl border border-dashed border-edge p-4 text-sm text-muted">
+            No wearable connected yet. Link a provider (WHOOP, Oura, Fitbit,
+            Garmin…) to start tracking your streak toward the bounty.
+          </p>
+          <ConnectButton address={address} />
+        </>
       ) : (
         <div className="mt-3">
           <p className="text-3xl font-bold text-accent">
-            {whoopQuery.data.progress.streakDays ?? 0}
+            {healthQuery.data.progress.streakDays ?? 0}
             <span className="text-lg font-semibold text-foreground">
-              {whoopQuery.data.progress.targetDays !== null
-                ? ` of ${whoopQuery.data.progress.targetDays} days`
+              {healthQuery.data.progress.targetDays !== null
+                ? ` of ${healthQuery.data.progress.targetDays} days`
                 : " days"}
             </span>
           </p>
           <p className="mt-1 text-sm text-muted">
-            {whoopQuery.data.progress.metric ?? "Verified streak"}
-            {whoopQuery.data.progress.lastSync !== null
-              ? ` · last sync ${whoopQuery.data.progress.lastSync}`
+            {healthQuery.data.progress.metric ?? "Verified streak"}
+            {healthQuery.data.progress.lastSync !== null
+              ? ` · last sync ${healthQuery.data.progress.lastSync}`
               : ""}
           </p>
         </div>
@@ -177,7 +211,7 @@ export default function DashboardContent() {
 
   return (
     <div className="space-y-6">
-      <StreakCard />
+      <StreakCard address={address} />
 
       <section className="space-y-4">
         <h2 className="text-lg font-semibold">Joined pools</h2>
