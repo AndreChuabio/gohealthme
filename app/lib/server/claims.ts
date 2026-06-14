@@ -18,6 +18,17 @@ export async function markClaimed(goalId: string): Promise<void> {
   await writeJson(CLAIMS_FILE, map);
 }
 
+/**
+ * Release a claim. Used to roll back the optimistic lock when a payout fails
+ * AFTER it was marked claimed but BEFORE funds actually moved — otherwise a
+ * transient failure would lock the reward forever.
+ */
+export async function unmarkClaimed(goalId: string): Promise<void> {
+  const map = await readJson<ClaimMap>(CLAIMS_FILE, {});
+  delete map[goalId];
+  await writeJson(CLAIMS_FILE, map);
+}
+
 export async function linkUnlinkAddress(
   userId: string,
   unlinkAddress: string,

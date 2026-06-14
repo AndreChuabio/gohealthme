@@ -167,10 +167,17 @@ export async function getProgress(
   address: string,
   threshold = 75,
   goalDays = 7,
+  windowStartISO?: string,
+  windowEndISO?: string,
 ): Promise<JunctionProgress> {
   const userId = await getOrCreateUser(address);
   const end = new Date();
-  const start = new Date(end.getTime() - 21 * 24 * 3600 * 1000);
+  // Fetch enough history to cover either the rolling window or the pool period.
+  const defaultStart = new Date(end.getTime() - 21 * 24 * 3600 * 1000);
+  const start =
+    windowStartISO !== undefined
+      ? new Date(`${windowStartISO}T00:00:00Z`)
+      : defaultStart;
   const resp = await jx<SleepResponse>(
     `/v2/summary/sleep/${userId}?start_date=${isoDate(start)}&end_date=${isoDate(end)}`,
   );
@@ -200,15 +207,35 @@ export async function getProgress(
   const newest = dates[0];
   const lastNight = byDay.get(newest) ?? null;
 
-  // Walk back day by day from the newest scored night.
+  // Count qualifying days (score >= threshold). With a pool window we count
+  // within [windowStart, min(windowEnd, today)] — progress scoped to the pool's
+  // goal period (counting from when the goal started), not a rolling last-N.
+  // Otherwise fall back to the last `goalDays`. Days over threshold are counted
+  // rather than a strict consecutive run, so a single missing day of wearable
+  // data doesn't reset progress.
   let streakDays = 0;
-  const cursor = new Date(`${newest}T00:00:00Z`);
-  for (;;) {
-    const key = cursor.toISOString().slice(0, 10);
-    const score = byDay.get(key);
-    if (score === undefined || score < threshold) break;
-    streakDays += 1;
-    cursor.setUTCDate(cursor.getUTCDate() - 1);
+  if (windowStartISO !== undefined) {
+    const today = new Date();
+    const winEndDate =
+      windowEndISO !== undefined &&
+      new Date(`${windowEndISO}T00:00:00Z`) < today
+        ? new Date(`${windowEndISO}T00:00:00Z`)
+        : today;
+    const cur = new Date(`${windowStartISO}T00:00:00Z`);
+    while (cur <= winEndDate) {
+      const key = cur.toISOString().slice(0, 10);
+      const score = byDay.get(key);
+      if (score !== undefined && score >= threshold) streakDays += 1;
+      cur.setUTCDate(cur.getUTCDate() + 1);
+    }
+  } else {
+    const cursor = new Date(`${newest}T00:00:00Z`);
+    for (let i = 0; i < goalDays; i += 1) {
+      const key = cursor.toISOString().slice(0, 10);
+      const score = byDay.get(key);
+      if (score !== undefined && score >= threshold) streakDays += 1;
+      cursor.setUTCDate(cursor.getUTCDate() - 1);
+    }
   }
 
   // Baseline week: days 8..14 back from the newest night.
@@ -231,4 +258,79 @@ export async function getProgress(
     baselineWeekAvg,
     days: dates.map((d) => ({ date: d, score: byDay.get(d) as number })),
   };
+}
+
+// ------------------------------------------------------------- recent data
+
+export interface RecentData {
+  sleep: Array<{ date: string; score: number | null; hours: number | null }>;
+  activity: Array<{ date: string; steps: number | null }>;
+}
+
+interface ActivityRecord {
+  calendar_date?: string;
+  date?: string;
+  steps?: number | null;
+}
+interface ActivityResponse {
+  activity?: ActivityRecord[];
+  data?: ActivityRecord[];
+}
+
+/**
+ * Recent per-day sleep + activity, newest first, for the dashboard demo
+ * display once a provider is linked. Each summary call is best-effort so a
+ * provider that only reports one modality still renders the other.
+ */
+export async function getRecent(address: string, days = 7): Promise<RecentData> {
+  const userId = await getOrCreateUser(address);
+  const end = new Date();
+  const start = new Date(end.getTime() - days * 24 * 3600 * 1000);
+  const range = `start_date=${isoDate(start)}&end_date=${isoDate(end)}`;
+
+  const [sleepResp, actResp] = await Promise.all([
+    jx<SleepResponse>(`/v2/summary/sleep/${userId}?${range}`).catch(
+      () => ({ sleep: [] }) as SleepResponse,
+    ),
+    jx<ActivityResponse>(`/v2/summary/activity/${userId}?${range}`).catch(
+      () => ({ activity: [] }) as ActivityResponse,
+    ),
+  ]);
+
+  const sleepRecs = sleepResp.sleep ?? sleepResp.data ?? [];
+  const actRecs = actResp.activity ?? actResp.data ?? [];
+
+  const sleep = sleepRecs
+    .map((r) => {
+      const date = dayKey(r);
+      if (date === null) return null;
+      const rec = r as SleepRecord & {
+        duration?: number;
+        total_sleep_seconds?: number;
+      };
+      const secs = rec.total_sleep_seconds ?? rec.duration ?? null;
+      return {
+        date,
+        score: recScore(r),
+        hours:
+          typeof secs === "number" ? Math.round((secs / 3600) * 10) / 10 : null,
+      };
+    })
+    .filter(
+      (x): x is { date: string; score: number | null; hours: number | null } =>
+        x !== null,
+    )
+    .sort((a, b) => (a.date < b.date ? 1 : -1));
+
+  const activity = actRecs
+    .map((r) => {
+      const date =
+        r.calendar_date?.slice(0, 10) ?? r.date?.slice(0, 10) ?? null;
+      if (date === null) return null;
+      return { date, steps: typeof r.steps === "number" ? r.steps : null };
+    })
+    .filter((x): x is { date: string; steps: number | null } => x !== null)
+    .sort((a, b) => (a.date < b.date ? 1 : -1));
+
+  return { sleep, activity };
 }

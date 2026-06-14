@@ -53,7 +53,9 @@ export function useEmbeddedWallet(): EmbeddedWalletState {
 
   return {
     ready: sdkHasLoaded,
-    authenticated: isLoggedIn,
+    // connect-only mode never sets isLoggedIn (no SIWE), but the app only needs
+    // a connected wallet address — so treat a connected wallet as authenticated.
+    authenticated: isLoggedIn || address !== null,
     address,
     login: () => setShowAuthFlow(true),
     logout: handleLogOut,

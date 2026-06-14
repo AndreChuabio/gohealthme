@@ -65,6 +65,11 @@ export function treasuryUnlinkClient(): UnlinkClient {
     ...unlinkEndpoint(),
     account: treasuryAccount,
     evm: evm.fromViem({ walletClient, publicClient }),
+    // Server/custodial register hook: wire directly to the admin so
+    // `ensureRegistered()` registers the treasury under THIS project. Without
+    // it the treasury address "does not belong to this tenant/project" and the
+    // engine refuses to issue it an authorization token ("token provider failed").
+    register: (payload) => admin.users.register(payload),
     authorizationToken: {
       provider: async (ctx) =>
         admin.authorizationTokens.issue({ unlinkAddress: ctx.unlinkAddress }),
