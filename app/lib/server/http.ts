@@ -5,13 +5,26 @@ export function jsonError(status: number, message: string): Response {
 }
 
 /**
- * Normalize unknown thrown values into a readable message. Env-var errors
- * are configuration problems (500 with the variable name); everything else
- * keeps its message so failures are never silent.
+ * Normalize unknown thrown values into a readable message. Walks the `.cause`
+ * chain so wrapped errors never hide the real failure — e.g. the Unlink SDK's
+ * `CapabilityError("token provider failed")` carries the actual engine error
+ * (HTTP status/body) in `.cause`, which is the part we actually need to see.
  */
 export function errorMessage(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  return String(err);
+  const parts: string[] = [];
+  let current: unknown = err;
+  const seen = new Set<unknown>();
+  while (current !== undefined && current !== null && !seen.has(current)) {
+    seen.add(current);
+    if (current instanceof Error) {
+      parts.push(current.message);
+      current = (current as { cause?: unknown }).cause;
+    } else {
+      parts.push(String(current));
+      break;
+    }
+  }
+  return parts.length > 0 ? parts.join(" — caused by: ") : String(err);
 }
 
 export async function readJsonBody(

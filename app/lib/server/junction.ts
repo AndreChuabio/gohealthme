@@ -200,14 +200,16 @@ export async function getProgress(
   const newest = dates[0];
   const lastNight = byDay.get(newest) ?? null;
 
-  // Walk back day by day from the newest scored night.
+  // Count qualifying days within the last `goalDays` window ending at the most
+  // recent scored night. (We count days at/over threshold rather than a strict
+  // consecutive run, so a single missing day of data — common with wearables —
+  // doesn't reset progress to zero.)
   let streakDays = 0;
   const cursor = new Date(`${newest}T00:00:00Z`);
-  for (;;) {
+  for (let i = 0; i < goalDays; i += 1) {
     const key = cursor.toISOString().slice(0, 10);
     const score = byDay.get(key);
-    if (score === undefined || score < threshold) break;
-    streakDays += 1;
+    if (score !== undefined && score >= threshold) streakDays += 1;
     cursor.setUTCDate(cursor.getUTCDate() - 1);
   }
 
