@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import { type Address, type Hash } from "viem";
+import { maxUint256, type Address, type Hash } from "viem";
 import {
   erc20Abi,
   getArcPublicClient,
@@ -44,7 +44,8 @@ export type DepositStatus =
   | { kind: "idle" }
   | { kind: "approving" }
   | { kind: "depositing" }
-  | { kind: "done"; approveHash: Hash; depositHash: Hash }
+  // approveHash is null when a prior (max) approval was reused — no approve tx.
+  | { kind: "done"; approveHash: Hash | null; depositHash: Hash }
   | { kind: "error"; message: string };
 
 export interface UseUsdcDepositResult {
@@ -83,18 +84,34 @@ export function useUsdcDeposit(): UseUsdcDepositResult {
       try {
         const walletClient = await getArcWalletClient();
         const publicClient = getArcPublicClient();
+        const owner = walletClient.account.address;
 
-        // ---- SWAP POINT (step 1 of 2): ERC-20 approve --------------------
-        setStatus({ kind: "approving" });
-        const approveHash = await walletClient.writeContract({
+        // ---- Approve only if needed -------------------------------------
+        // ERC-20 requires the pool contract to be approved before it can pull
+        // USDC. We check the existing allowance first and, when an approval is
+        // required, approve maxUint256 ONCE — so every later deposit reuses it
+        // and skips this tx entirely (one wallet confirmation per action, not
+        // two). The first-ever deposit still does approve + write.
+        const allowance = (await publicClient.readContract({
           address: USDC_ADDRESS,
           abi: erc20Abi,
-          functionName: "approve",
-          args: [poolsAddress, amount],
-        });
-        await publicClient.waitForTransactionReceipt({ hash: approveHash });
+          functionName: "allowance",
+          args: [owner, poolsAddress],
+        })) as bigint;
 
-        // ---- SWAP POINT (step 2 of 2): the contract write that pulls USDC
+        let approveHash: Hash | null = null;
+        if (allowance < amount) {
+          setStatus({ kind: "approving" });
+          approveHash = await walletClient.writeContract({
+            address: USDC_ADDRESS,
+            abi: erc20Abi,
+            functionName: "approve",
+            args: [poolsAddress, maxUint256],
+          });
+          await publicClient.waitForTransactionReceipt({ hash: approveHash });
+        }
+
+        // ---- The contract write that pulls USDC --------------------------
         setStatus({ kind: "depositing" });
         const depositHash = await walletClient.writeContract({
           address: poolsAddress,

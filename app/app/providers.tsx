@@ -54,6 +54,11 @@ export default function Providers({ children }: { children: ReactNode }) {
         environmentId,
         walletConnectors: [EthereumWalletConnectors],
         overrides: { evmNetworks: [arcEvmNetwork] },
+        // Don't show Dynamic's per-transaction confirmation modal for the
+        // embedded (email) wallet — email-login users sign without an extra
+        // popup each time. (External wallets like MetaMask still show their
+        // own native prompt, which Dynamic can't suppress.)
+        transactionConfirmation: { required: false },
       }}
     >
       <WagmiProvider config={wagmiConfig}>

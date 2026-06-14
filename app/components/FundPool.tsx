@@ -111,8 +111,12 @@ function FundPoolInner({ poolId }: { poolId: bigint }) {
           <p className="text-sm font-semibold text-accent">
             Pool topped up.
           </p>
-          <ArcTxLink txHash={status.approveHash} label="View approval tx" />
-          <br />
+          {status.approveHash ? (
+            <>
+              <ArcTxLink txHash={status.approveHash} label="View approval tx" />
+              <br />
+            </>
+          ) : null}
           <ArcTxLink txHash={status.depositHash} label="View fundPool tx" />
         </div>
       ) : null}
