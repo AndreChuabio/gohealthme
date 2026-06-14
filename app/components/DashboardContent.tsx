@@ -170,6 +170,84 @@ function StreakCard({ address }: { address: `0x${string}` }) {
   );
 }
 
+interface RecentData {
+  connected: boolean;
+  sleep: Array<{ date: string; score: number | null; hours: number | null }>;
+  activity: Array<{ date: string; steps: number | null }>;
+}
+
+async function fetchRecentData(address: `0x${string}`): Promise<RecentData> {
+  const res = await fetch(`/api/junction/data?address=${address}`);
+  if (!res.ok) throw new Error(`Recent data feed responded ${res.status}.`);
+  const j = (await res.json()) as Partial<RecentData>;
+  return {
+    connected: j.connected === true,
+    sleep: Array.isArray(j.sleep) ? j.sleep : [],
+    activity: Array.isArray(j.activity) ? j.activity : [],
+  };
+}
+
+/** Shows the latest few days pulled from the linked provider (demo proof). */
+function RecentDataCard({ address }: { address: `0x${string}` }) {
+  const recentQuery = useQuery({
+    queryKey: ["junction-data", address],
+    queryFn: () => fetchRecentData(address),
+    retry: false,
+  });
+
+  const data = recentQuery.data;
+  if (
+    recentQuery.isLoading ||
+    data === undefined ||
+    !data.connected ||
+    (data.sleep.length === 0 && data.activity.length === 0)
+  ) {
+    return null; // only render once a provider is linked and data exists
+  }
+
+  return (
+    <section className="rounded-2xl border border-edge bg-surface p-5">
+      <h2 className="text-lg font-semibold">Latest synced data</h2>
+      <p className="mt-1 text-sm text-muted">
+        Pulled live from your linked provider via Junction.
+      </p>
+      <div className="mt-4 grid gap-4 sm:grid-cols-2">
+        {data.sleep.length > 0 && (
+          <div>
+            <h3 className="text-sm font-semibold text-muted">Sleep</h3>
+            <ul className="mt-2 space-y-1 text-sm">
+              {data.sleep.slice(0, 7).map((d) => (
+                <li key={`s-${d.date}`} className="flex justify-between">
+                  <span className="text-muted">{d.date}</span>
+                  <span className="font-medium">
+                    {d.hours !== null ? `${d.hours}h` : "—"}
+                    {d.score !== null ? ` · score ${d.score}` : ""}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {data.activity.length > 0 && (
+          <div>
+            <h3 className="text-sm font-semibold text-muted">Steps</h3>
+            <ul className="mt-2 space-y-1 text-sm">
+              {data.activity.slice(0, 7).map((d) => (
+                <li key={`a-${d.date}`} className="flex justify-between">
+                  <span className="text-muted">{d.date}</span>
+                  <span className="font-medium">
+                    {d.steps !== null ? d.steps.toLocaleString() : "—"}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 export default function DashboardContent() {
   const { ready, authenticated, address, login } = useEmbeddedWallet();
 
@@ -212,6 +290,7 @@ export default function DashboardContent() {
   return (
     <div className="space-y-6">
       <StreakCard address={address} />
+      <RecentDataCard address={address} />
 
       <section className="space-y-4">
         <h2 className="text-lg font-semibold">Joined pools</h2>

@@ -232,3 +232,78 @@ export async function getProgress(
     days: dates.map((d) => ({ date: d, score: byDay.get(d) as number })),
   };
 }
+
+// ------------------------------------------------------------- recent data
+
+export interface RecentData {
+  sleep: Array<{ date: string; score: number | null; hours: number | null }>;
+  activity: Array<{ date: string; steps: number | null }>;
+}
+
+interface ActivityRecord {
+  calendar_date?: string;
+  date?: string;
+  steps?: number | null;
+}
+interface ActivityResponse {
+  activity?: ActivityRecord[];
+  data?: ActivityRecord[];
+}
+
+/**
+ * Recent per-day sleep + activity, newest first, for the dashboard demo
+ * display once a provider is linked. Each summary call is best-effort so a
+ * provider that only reports one modality still renders the other.
+ */
+export async function getRecent(address: string, days = 7): Promise<RecentData> {
+  const userId = await getOrCreateUser(address);
+  const end = new Date();
+  const start = new Date(end.getTime() - days * 24 * 3600 * 1000);
+  const range = `start_date=${isoDate(start)}&end_date=${isoDate(end)}`;
+
+  const [sleepResp, actResp] = await Promise.all([
+    jx<SleepResponse>(`/v2/summary/sleep/${userId}?${range}`).catch(
+      () => ({ sleep: [] }) as SleepResponse,
+    ),
+    jx<ActivityResponse>(`/v2/summary/activity/${userId}?${range}`).catch(
+      () => ({ activity: [] }) as ActivityResponse,
+    ),
+  ]);
+
+  const sleepRecs = sleepResp.sleep ?? sleepResp.data ?? [];
+  const actRecs = actResp.activity ?? actResp.data ?? [];
+
+  const sleep = sleepRecs
+    .map((r) => {
+      const date = dayKey(r);
+      if (date === null) return null;
+      const rec = r as SleepRecord & {
+        duration?: number;
+        total_sleep_seconds?: number;
+      };
+      const secs = rec.total_sleep_seconds ?? rec.duration ?? null;
+      return {
+        date,
+        score: recScore(r),
+        hours:
+          typeof secs === "number" ? Math.round((secs / 3600) * 10) / 10 : null,
+      };
+    })
+    .filter(
+      (x): x is { date: string; score: number | null; hours: number | null } =>
+        x !== null,
+    )
+    .sort((a, b) => (a.date < b.date ? 1 : -1));
+
+  const activity = actRecs
+    .map((r) => {
+      const date =
+        r.calendar_date?.slice(0, 10) ?? r.date?.slice(0, 10) ?? null;
+      if (date === null) return null;
+      return { date, steps: typeof r.steps === "number" ? r.steps : null };
+    })
+    .filter((x): x is { date: string; steps: number | null } => x !== null)
+    .sort((a, b) => (a.date < b.date ? 1 : -1));
+
+  return { sleep, activity };
+}
