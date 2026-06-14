@@ -52,6 +52,11 @@ export default function Providers({ children }: { children: ReactNode }) {
     <DynamicContextProvider
       settings={{
         environmentId,
+        // connect-only skips the SIWE ownership signature on login (the wallet
+        // sign step that threw UserRejectedRequestError 4001 in prod). The app
+        // only gates on useIsLoggedIn()/primaryWallet and Unlink derives its
+        // own signature separately, so no login signature is needed.
+        initialAuthenticationMode: "connect-only",
         walletConnectors: [EthereumWalletConnectors],
         overrides: { evmNetworks: [arcEvmNetwork] },
         // Don't show Dynamic's per-transaction confirmation modal for the
