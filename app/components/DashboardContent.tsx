@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
+import BalanceCard from "@/components/BalanceCard";
 import Countdown from "@/components/Countdown";
 import { Badge, EmptyState, ErrorNote, Skeleton } from "@/components/ui";
 import {
@@ -301,6 +302,7 @@ export default function DashboardContent() {
 
   return (
     <div className="space-y-6">
+      <BalanceCard address={address} />
       <StreakCard address={address} pool={joinedQuery.data?.[0]?.pool} />
       <RecentDataCard address={address} />
 
