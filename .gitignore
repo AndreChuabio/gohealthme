@@ -18,3 +18,4 @@ contracts/broadcast/
 *.log
 __pycache__/
 .vercel
+.env*
