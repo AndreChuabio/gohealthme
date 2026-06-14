@@ -190,6 +190,10 @@ function JoinPoolInner({
       setStatus({ kind: "joined", txHash: joinHash });
       await queryClient.invalidateQueries({ queryKey: ["pool"] });
       await queryClient.invalidateQueries({ queryKey: ["participants"] });
+      // Also refetch the SINGULAR participant query (["participant", id, address]):
+      // it drives hasJoined, which gates the document upload + private-claim
+      // sections. Without this they only appear after a manual page reload.
+      await queryClient.invalidateQueries({ queryKey: ["participant"] });
     } catch (err) {
       setStatus({
         kind: "error",
