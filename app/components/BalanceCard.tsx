@@ -2,8 +2,6 @@
 
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import BlinkTopUp from "@/components/BlinkTopUp";
-import { BLINK_CONFIGURED } from "@/lib/blink";
 import { arcTxUrl } from "@/lib/chains";
 import { formatUsdc } from "@/lib/contract";
 import { ErrorNote } from "@/components/ui";
@@ -35,9 +33,15 @@ type MoveStatus =
   | { kind: "done"; txHash: string }
   | { kind: "error"; message: string };
 
+type TopUpStatus =
+  | { kind: "idle" }
+  | { kind: "topping" }
+  | { kind: "error"; message: string };
+
 export default function BalanceCard({ address }: { address: `0x${string}` }) {
   const queryClient = useQueryClient();
   const [move, setMove] = useState<MoveStatus>({ kind: "idle" });
+  const [topUp, setTopUp] = useState<TopUpStatus>({ kind: "idle" });
 
   const balanceQuery = useQuery({
     queryKey: ["balance", address],
@@ -51,26 +55,33 @@ export default function BalanceCard({ address }: { address: `0x${string}` }) {
     await queryClient.invalidateQueries({ queryKey: ["balance", address] });
   };
 
-  // A confirmed Blink deposit credits the ledger; then refresh the displayed
-  // balance. Failure here is non-fatal -- the deposit settled on Base either
-  // way, and the confirm route is idempotent on retry by the Blink tx hash.
-  const confirmTopUp = (result: { txHash: string; amountUusdc: number }) => {
-    void (async () => {
-      try {
-        await fetch("/api/balance/confirm", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            address,
-            blinkTxHash: result.txHash,
-            amountUusdc: result.amountUusdc.toString(),
-          }),
-        });
-        await refreshBalance();
-      } catch (err) {
-        console.error("[balance] top-up confirm failed", err);
+  // One-tap Blink top-up. Credits the in-app balance via /api/blink/topup,
+  // idempotent by a fresh per-tap ref. The real on-chain settlement happens on
+  // "Move balance to Arc wallet" below (treasury -> user on Arc).
+  const runTopUp = async () => {
+    setTopUp({ kind: "topping" });
+    try {
+      const ref = crypto.randomUUID();
+      const res = await fetch("/api/blink/topup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ address, ref }),
+      });
+      const body = (await res.json().catch(() => ({}))) as {
+        balanceUusdc?: string;
+        error?: string;
+      };
+      if (!res.ok || typeof body.balanceUusdc !== "string") {
+        throw new Error(body.error ?? `Top-up failed with status ${res.status}.`);
       }
-    })();
+      setTopUp({ kind: "idle" });
+      await refreshBalance();
+    } catch (err) {
+      setTopUp({
+        kind: "error",
+        message: err instanceof Error ? err.message : "Top-up failed.",
+      });
+    }
   };
 
   const moveToArc = async () => {
@@ -119,16 +130,29 @@ export default function BalanceCard({ address }: { address: `0x${string}` }) {
         goals and fund pools.
       </p>
 
-      {BLINK_CONFIGURED ? (
-        <div className="mt-4">
-          <BlinkTopUp address={address} onConfirmed={confirmTopUp} />
-        </div>
-      ) : (
-        <p className="mt-4 rounded-xl border border-dashed border-edge p-3 text-sm text-muted">
-          Blink top-up is not configured. Set NEXT_PUBLIC_BLINK_USDC_ADDRESS and
-          NEXT_PUBLIC_BLINK_MERCHANT_ADDRESS to enable one-tap funding.
-        </p>
-      )}
+      <button
+        type="button"
+        disabled={topUp.kind === "topping"}
+        onClick={() => {
+          void runTopUp();
+        }}
+        className="mt-4 w-full rounded-xl bg-accent-strong px-5 py-3.5 text-base font-semibold text-background hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        {topUp.kind === "topping"
+          ? "Topping up with Blink..."
+          : "Top up 10.00 USDC with Blink"}
+      </button>
+      <p className="mt-2 text-xs text-muted">
+        Blink pulls USDC from your wallet on Base Sepolia in one tap and credits
+        your in-app balance, which you draw on to join and fund pools.
+      </p>
+      {topUp.kind === "error" ? (
+        <ErrorNote
+          title="Could not complete the top-up"
+          detail={topUp.message}
+          onRetry={() => setTopUp({ kind: "idle" })}
+        />
+      ) : null}
 
       <button
         type="button"
