@@ -313,3 +313,78 @@ to their wallet. Routes: `/api/unlink/{register,authorization-token,payout}`. SD
 `DynamicWagmiConnector WARN: Chain Sepolia not in Dynamic config` + `UnknownRpcError: Transport
 request timed out` = leftover Sepolia chain in the wagmi config (from dropped ENS). Harmless console
 noise; safe to remove Sepolia from `app/app/providers.tsx` + `app/lib/chains.ts` (Arc-only app).
+
+---
+
+# 2026-06-14 — Production persistence (Redis), deploy, Blink top-up, treasury funding
+
+Picks up from the Dynamic + Unlink section. All on `main`.
+
+## Persistence moved to Upstash Redis (fixes the prod payout 403)
+`app/lib/server/store.ts` used to write per-instance JSON files under `os.tmpdir()`. On Vercel that
+broke cross-request state: `/api/world/verify` wrote the World-ID record on one serverless instance,
+`/api/unlink/payout` read it on another, so `getVerification()` returned null and the payout always
+**403'd ("No verified World ID record for <addr> in pool N")** in prod — while working locally (one
+process, one tmpdir). The same flaw hit claim idempotency (`isClaimed`/`markClaimed`).
+
+Fix: `store.ts` now reads/writes **Upstash Redis** (REST, serverless-safe) when its env vars are set,
+falling back to the file store for local dev/tests. `readJson`/`writeJson` signatures are unchanged,
+so `claims.ts` and `world.ts` were untouched.
+- Provisioned via the **Vercel "Upstash for Redis"** Marketplace integration → injects
+  `KV_REST_API_URL` + `KV_REST_API_TOKEN` (also `KV_URL`, `REDIS_URL`) into all envs. The code accepts
+  `KV_REST_API_*` or `UPSTASH_REDIS_REST_*`. It's one shared DB across Prod/Preview/Dev.
+- Records written before this change (to the old ephemeral store) are gone. For an already-joined pool
+  whose World-ID proof can't be re-issued (one proof per pool), seed the record directly:
+  `redis.set("gohealthme:world-verifications.json", { "<lowercase addr>": { "<poolId>": { nullifierHash, poolId, verifiedAt } } })`.
+
+## MetaMask "message signature denied" (4001) — usually a STALE PROD BUILD, not a regression
+The sign-in fix is `useMetamaskSdk: false` + `initialAuthenticationMode: "connect-only"` in
+`app/app/providers.tsx` (skips Dynamic's MetaMask multichain SDK and the SIWE verify signature). When
+prod asks MetaMask to "sign in to verify" again (Dynamic logs at `https://logs.dynamicauth.com/api/v1/<envId>`
+show `authOrigin: wallet-verify`, `errorCode: 4001`), prod is running an OLD build that predates the fix.
+Verify by grepping the live JS bundle for `useMetamaskSdk:!1` (=false, fix present) vs `!0`. Fix: clean
+redeploy (below) + hard-refresh the browser (it caches the old chunks).
+
+## Deploying (the reliable path)
+From repo root or `app/` (both link to the same Vercel project, root dir = `app/`):
+```
+vercel --prod --force      # --force skips the build cache; a dashboard "Redeploy" can reship stale code
+```
+- A git push to `main` also auto-deploys, but has reshipped stale/old-commit builds before — prefer the
+  `--force` CLI deploy when it matters, then verify the live bundle.
+- **Env gotcha:** `NEXT_PUBLIC_*` vars are inlined at build time. This app reliably bakes them from the
+  uploaded `app/.env.local` (the CLI uploads it); setting them only in the Vercel dashboard has NOT
+  reliably inlined them here — keep `NEXT_PUBLIC_*` in `app/.env.local` too, then `--force` redeploy.
+- `vercel env pull` shows `""` for sensitive/encrypted vars even when set — don't trust it to read values
+  back; grep the live bundle instead.
+
+## Blink one-tap USDC top-up (PR #6) — required env
+Add to Vercel (all envs) AND `app/.env.local` (the `NEXT_PUBLIC_*` ones must be in `app/.env.local`):
+```
+NEXT_PUBLIC_BLINK_USDC_ADDRESS=0x036CbD53842c5426634e7929541eC2318f3dCF7e
+NEXT_PUBLIC_BLINK_MERCHANT_ADDRESS=0x8a39a5160Bad34713169ad7eEf9bd779b32c6141
+BLINK_MERCHANT_ADDRESS=0x8a39a5160Bad34713169ad7eEf9bd779b32c6141
+BLINK_MERCHANT_ID=<uuid>
+BLINK_MERCHANT_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"  # PEM PKCS8 ECDSA P-256; normalizePem() converts literal \n at runtime
+TREASURY_PRIVATE_KEY=0x...    # Blink treasury EVM key -> address 0xd3f3c7813d88946E255005E1b7B49d4995Bd87a5
+```
+`TREASURY_PRIVATE_KEY` (Blink) is a DIFFERENT account from `UNLINK_TREASURY_PRIVATE_KEY` (the payout
+treasury, `0xc278…04e1`). Don't mix them up.
+
+## Unlink payout needs a SHIELDED treasury balance
+`runPrivatePayout` does `deposit -> transfer` from the Unlink treasury (`0xc278…04e1`). If the
+treasury's *shielded* balance is 0 you get `transfer.prepare failed: invalid amount: insufficient
+balance: have 0, need 250000`, even with plenty of *public* USDC. Fund the shield once:
+`treasuryUnlinkClient().depositWithApproval({ token: ARC_USDC_ADDRESS, amount: "5000000" })` → `.wait()`;
+verify with `balanceOf(ARC_USDC_ADDRESS)`. The balance lives on the Unlink engine (account-scoped), so
+funding once covers local + prod.
+- KNOWN BUG (follow-up): `runPrivatePayout` calls plain `deposit()` (needs the ERC-20 approval that
+  `depositWithApproval` handles) and `settle()` awaits `.wait()` but ignores the result status — so a
+  failed deposit is swallowed and the transfer hits an empty shield. Fix = use `depositWithApproval` +
+  check terminal status. Until then, keep a standing shielded balance.
+
+## Wearables = Junction (not raw WHOOP OAuth)
+Health data links via **Junction Link** (WHOOP/Oura/Fitbit/Garmin) — `/api/junction/{link,data,progress}`,
+keyed by wallet address. The dashboard shows a **Connect health data** button when unlinked and a
+**Connect / switch provider** (relink) button when linked. A `400` on the progress feed = no linked
+provider for that wallet yet (or a Junction env/param issue), not a code bug.

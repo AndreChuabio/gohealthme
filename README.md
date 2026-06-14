@@ -10,17 +10,17 @@ Partners: Arc (USDC settlement chain), World (proof-of-human), Chainlink (CRE + 
 
 1. Anyone funds an initiative pool (sleep, workouts, preventive care) with USDC and published bounties
 2. Participants join with a World ID proof — one human, one entry; the product breaks without proof-of-human
-3. Health data is verified off-chain (WHOOP, or a Chainlink Confidential AI Attester judging the goal inside a TEE); only the verdict ever touches the chain
-4. The pool settles instantly: achievers get paid, forfeits roll back into the pool
-5. Optional: stake on your own streak for a multiplier, or back someone else's goal
+3. Health data is verified off-chain (wearables via Junction — WHOOP/Oura/Fitbit/Garmin — or a Chainlink Confidential AI Attester judging the goal inside a TEE); only the verdict ever touches the chain
+4. The pool settles instantly: achievers get paid (optionally to a private Unlink account derived from their own wallet signature, with no on-chain link to the goal), forfeits roll back into the pool
+5. Optional: stake on your own streak for a multiplier, back someone else's goal, or top up USDC in one tap via Blink
 
 ## Architecture
 
 ```
-Next.js (frontend + API) -- Privy embedded wallets
+Next.js (frontend + API) -- Dynamic embedded wallets + Unlink private payouts
    |          |
    |          +-- World ID cloud verify (backend) --> nullifier gates joinPool
-   |          +-- WHOOP OAuth -> health summary
+   |          +-- Junction Link (WHOOP/Oura/Fitbit/Garmin) -> health summary
    |                               |
    |              verdict path A (live demo): oracle signer
    |              verdict path B (Chainlink):
