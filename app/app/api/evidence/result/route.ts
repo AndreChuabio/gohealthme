@@ -30,6 +30,7 @@
 
 import { isAddress, type Address } from "viem";
 import { recordResult } from "@/lib/server/oracle";
+import { recordVerdict } from "@/lib/server/verdict";
 import {
   multiplierForConfidence,
   pollInference,
@@ -99,6 +100,27 @@ export async function POST(request: Request) {
         true,
         multiplierBps,
       );
+
+      // Tier 1: also write the verdict into the HealthVerdict registry so
+      // HealthPools.settle() can gate on canSettle(goalId). Best-effort — a
+      // registry write must never break the payout flow. No-op until
+      // HEALTH_VERDICT_ADDRESS is set.
+      try {
+        const vr = await recordVerdict(
+          BigInt(poolId),
+          address as Address,
+          v.verified,
+          v.confidence,
+          attesterId,
+        );
+        console.log(`[verdict] HealthVerdict registry: ${vr.status}`);
+      } catch (e) {
+        console.error(
+          "[verdict] HealthVerdict record failed (non-fatal):",
+          e instanceof Error ? e.message : String(e),
+        );
+      }
+
       return Response.json({
         status: "completed",
         verified: v.verified,
