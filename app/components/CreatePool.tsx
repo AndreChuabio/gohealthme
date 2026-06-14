@@ -442,8 +442,15 @@ function CreatePoolInner() {
             <p className="text-sm font-semibold text-accent">
               Pool created on Arc.
             </p>
-            <ArcTxLink txHash={status.approveHash} label="View approval tx" />
-            <br />
+            {status.approveHash ? (
+              <>
+                <ArcTxLink
+                  txHash={status.approveHash}
+                  label="View approval tx"
+                />
+                <br />
+              </>
+            ) : null}
             <ArcTxLink
               txHash={status.depositHash}
               label="View createPool tx"
