@@ -66,11 +66,33 @@ export function isSupportedContentType(
   return (SUPPORTED_CONTENT_TYPES as readonly string[]).includes(value);
 }
 
-/** Prefix marking a mock (no-key / submit-failure) inference id. */
+/** Prefix marking a mock (DEMO_MODE no-key / submit-failure) inference id. */
 const MOCK_ID_PREFIX = "mock-";
+
+/**
+ * Prefix marking a fail-closed inference id. Returned by submitInference when the
+ * attester is unreachable / unconfigured AND DEMO_MODE is off, so pollInference
+ * resolves it to an UNVERIFIED verdict that is never recorded on-chain.
+ */
+const FAIL_ID_PREFIX = "fail-";
 
 export function isMockId(id: string): boolean {
   return id.startsWith(MOCK_ID_PREFIX);
+}
+
+export function isFailId(id: string): boolean {
+  return id.startsWith(FAIL_ID_PREFIX);
+}
+
+/**
+ * Whether the demo/mock path is enabled. OFF by default (production-safe): the
+ * mock verdict (verified=true) is only reachable when DEMO_MODE is explicitly
+ * "true" or "1". With DEMO_MODE off, any attester failure fails CLOSED to an
+ * unverified result instead of minting a free verified verdict.
+ */
+function demoMode(): boolean {
+  const value = optionalEnv("DEMO_MODE", "").toLowerCase();
+  return value === "true" || value === "1";
 }
 
 const SYSTEM_PROMPT =
@@ -97,8 +119,11 @@ interface InferenceResource {
 /**
  * Submit a document to the attester for confidential inference. Returns the
  * attester inference id to poll. When CONFIDENTIAL_AI_API_KEY is unset, or the
- * submit request throws/returns a non-2xx, returns a deterministic mock id and
- * logs a clear warning so the demo flow still completes.
+ * submit request throws/returns a non-2xx, the result depends on DEMO_MODE:
+ *   - DEMO_MODE on  -> returns a deterministic mock id (verified=true demo path).
+ *   - DEMO_MODE off -> FAILS CLOSED: returns a fail id that pollInference resolves
+ *     to an UNVERIFIED verdict, so a broken/unconfigured attester can never mint
+ *     a verified-true result on-chain. Every fallback is logged loudly.
  */
 export async function submitInference(
   goalSpec: string,
@@ -108,12 +133,21 @@ export async function submitInference(
 ): Promise<string> {
   const apiKey = optionalEnv("CONFIDENTIAL_AI_API_KEY", "");
   if (apiKey === "") {
-    console.warn(
-      "[attester] CONFIDENTIAL_AI_API_KEY not set — using DETERMINISTIC MOCK " +
-        "verdict (verified=true, confidence=high). Set CONFIDENTIAL_AI_API_KEY " +
-        "in gohealthme/.env for live TEE inference.",
+    if (demoMode()) {
+      console.error(
+        "[attester] CONFIDENTIAL_AI_API_KEY not set and DEMO_MODE on — using " +
+          "DETERMINISTIC MOCK verdict (verified=true, confidence=high). This is " +
+          "a DEMO-ONLY path and must never run in production.",
+      );
+      return mockId();
+    }
+    console.error(
+      "[attester] CONFIDENTIAL_AI_API_KEY not set and DEMO_MODE off — FAILING " +
+        "CLOSED to an unverified result. No verdict will be recorded on-chain. " +
+        "Set CONFIDENTIAL_AI_API_KEY for live TEE inference, or DEMO_MODE=true " +
+        "to restore the demo mock.",
     );
-    return mockId();
+    return failId();
   }
 
   const resource: InferenceResource = {
@@ -139,38 +173,27 @@ export async function submitInference(
       body: JSON.stringify(body),
     });
   } catch (err) {
-    console.error(
-      "[attester] inference submit failed to send, falling back to mock:",
-      String(err),
-    );
-    return mockId();
+    return submitFallback(`inference submit failed to send: ${String(err)}`);
   }
 
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
-    console.error(
-      `[attester] inference submit returned HTTP ${res.status}, falling back ` +
-        `to mock: ${detail.slice(0, 300)}`,
+    return submitFallback(
+      `inference submit returned HTTP ${res.status}: ${detail.slice(0, 300)}`,
     );
-    return mockId();
   }
 
   let payload: { id?: unknown; status?: unknown };
   try {
     payload = (await res.json()) as typeof payload;
   } catch (err) {
-    console.error(
-      "[attester] inference submit returned unreadable JSON, falling back to mock:",
-      String(err),
+    return submitFallback(
+      `inference submit returned unreadable JSON: ${String(err)}`,
     );
-    return mockId();
   }
 
   if (typeof payload.id !== "string" || payload.id.trim() === "") {
-    console.error(
-      "[attester] inference submit response had no id, falling back to mock.",
-    );
-    return mockId();
+    return submitFallback("inference submit response had no id");
   }
 
   console.log(
@@ -195,21 +218,61 @@ export interface PollResult {
 /**
  * Poll the attester for a single inference id. Never throws — transport/parse
  * failures surface as status "failed" with an unverified verdict so the route
- * stays crash-free. A mock id resolves immediately to a completed verified
- * verdict (the demo fallback).
+ * stays crash-free.
+ *
+ * Fail-closed semantics:
+ *   - a fail id (submitInference fail-closed) always resolves to a "failed"
+ *     unverified verdict, regardless of DEMO_MODE.
+ *   - a mock id, or a missing key on a non-mock id, resolves to the verified
+ *     mock verdict ONLY when DEMO_MODE is on; otherwise it FAILS CLOSED. The
+ *     verified-true mock is unreachable in production.
  */
 export async function pollInference(
   attesterId: string,
   goalSpec: string,
 ): Promise<PollResult> {
+  if (isFailId(attesterId)) {
+    return {
+      status: "failed",
+      verdict: failedVerdict(
+        "Verification could not be performed (the attester was unreachable or " +
+          "unconfigured). Nothing was recorded. Please try again.",
+      ),
+    };
+  }
+
   if (isMockId(attesterId)) {
-    return { status: "completed", verdict: mockVerdict(goalSpec) };
+    if (demoMode()) {
+      return { status: "completed", verdict: mockVerdict(goalSpec) };
+    }
+    console.error(
+      "[attester] received a mock id with DEMO_MODE off — FAILING CLOSED. A " +
+        "mock id should never be produced in production; refusing to record it.",
+    );
+    return {
+      status: "failed",
+      verdict: failedVerdict(
+        "Verification could not be performed. Nothing was recorded.",
+      ),
+    };
   }
 
   const apiKey = optionalEnv("CONFIDENTIAL_AI_API_KEY", "");
   if (apiKey === "") {
-    // No key but a non-mock id: treat as mock so the demo keeps flowing.
-    return { status: "completed", verdict: mockVerdict(goalSpec) };
+    if (demoMode()) {
+      // No key but a non-mock id: treat as mock so the demo keeps flowing.
+      return { status: "completed", verdict: mockVerdict(goalSpec) };
+    }
+    console.error(
+      "[attester] poll with no CONFIDENTIAL_AI_API_KEY and DEMO_MODE off — " +
+        "FAILING CLOSED to an unverified result. Nothing will be recorded.",
+    );
+    return {
+      status: "failed",
+      verdict: failedVerdict(
+        "Verification is not configured (no attester key). Nothing was recorded.",
+      ),
+    };
   }
 
   let res: Response;
@@ -282,16 +345,42 @@ export async function pollInference(
   return { status: "verifying", verdict: null };
 }
 
-/** Deterministic mock inference id (no key / submit failure). */
+/** Deterministic mock inference id (DEMO_MODE no-key / submit failure). */
 function mockId(): string {
   return `${MOCK_ID_PREFIX}${Math.random().toString(36).slice(2, 12)}`;
 }
 
+/** Fail-closed inference id — pollInference resolves it to an unverified verdict. */
+function failId(): string {
+  return `${FAIL_ID_PREFIX}${Math.random().toString(36).slice(2, 12)}`;
+}
+
 /**
- * Deterministic mock verdict used when CONFIDENTIAL_AI_API_KEY is absent or the
- * attester submit failed. Returns verified=true/high so the demo flow still
- * records on-chain. The reason makes the mock origin explicit and never echoes
- * document contents.
+ * Shared submit-time fallback for an attester error mid-request (after the key
+ * check). DEMO_MODE on returns a mock id (demo path); off FAILS CLOSED to a fail
+ * id. Logs loudly in both cases so the failure is never silent.
+ */
+function submitFallback(context: string): string {
+  if (demoMode()) {
+    console.error(
+      `[attester] ${context} — DEMO_MODE on, falling back to MOCK verdict ` +
+        `(verified=true). DEMO-ONLY; must never run in production.`,
+    );
+    return mockId();
+  }
+  console.error(
+    `[attester] ${context} — DEMO_MODE off, FAILING CLOSED to an unverified ` +
+      `result. Nothing will be recorded on-chain.`,
+  );
+  return failId();
+}
+
+/**
+ * Deterministic mock verdict — DEMO_MODE ONLY. Reachable only when DEMO_MODE is
+ * on and the attester is absent/failing; returns verified=true/high so the demo
+ * flow still records on-chain. With DEMO_MODE off this is never called (the flow
+ * fails closed instead). The reason makes the mock origin explicit and never
+ * echoes document contents.
  */
 function mockVerdict(goalSpec: string): Verdict {
   return {
