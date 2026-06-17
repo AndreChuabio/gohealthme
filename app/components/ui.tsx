@@ -112,6 +112,32 @@ export function Badge({
   );
 }
 
+/**
+ * Approval-stamp marker. Decorative bragging-rights chrome only; the load-bearing
+ * verdict and amount are always rendered as plain text next to it. The animation
+ * is disabled under prefers-reduced-motion (see globals.css).
+ */
+export function Stamp({
+  children,
+  tone = "approved",
+}: {
+  children: ReactNode;
+  tone?: "approved" | "rejected";
+}) {
+  const tones: Record<string, string> = {
+    approved: "border-gold text-gold",
+    rejected: "border-danger text-danger",
+  };
+  return (
+    <span
+      aria-hidden="true"
+      className={`gains-stamp inline-flex select-none items-center rounded-md border-2 px-3 py-1 text-sm font-extrabold uppercase tracking-[0.18em] ${tones[tone]}`}
+    >
+      {children}
+    </span>
+  );
+}
+
 export function Stat({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="rounded-xl border border-edge bg-surface-raised p-4">

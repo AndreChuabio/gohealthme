@@ -6,7 +6,7 @@ import { arcTxUrl } from "@/lib/chains";
 import { DYNAMIC_CONFIGURED } from "@/lib/config";
 import { displayGoalSpec } from "@/lib/contract";
 import { useEmbeddedWallet } from "@/lib/wallet";
-import { ErrorNote } from "@/components/ui";
+import { ErrorNote, Stamp } from "@/components/ui";
 
 // text/plain is included so the demo sample records in public/demo-evidence/
 // (.txt) can be uploaded directly.
@@ -59,10 +59,10 @@ const TIMELINE_ORDER: TimelineStep[] = [
 ];
 
 const TIMELINE_LABELS: Record<TimelineStep, string> = {
-  uploaded: "Uploaded",
-  verifying: "Verifying privately in a secure enclave (TEE)",
-  verdict: "Verdict received",
-  settling: "Settling on Arc",
+  uploaded: "Got your file",
+  verifying: "Checking inside the sealed box",
+  verdict: "Verdict in",
+  settling: "Sending the money",
   paid: "Paid",
 };
 
@@ -348,11 +348,13 @@ function EvidenceUploadInner({
   if (status.kind === "progress") {
     return (
       <div className="space-y-4">
-        <h3 className="text-lg font-semibold">Verifying your record</h3>
+        <h3 className="text-lg font-semibold">
+          Checking your proof. Nobody&apos;s peeking. Not even GAINS.
+        </h3>
         <p className="text-sm text-muted">
-          Your document is being checked privately inside a confidential AI
-          enclave (TEE). Nothing leaves the enclave; only the verdict is recorded
-          on-chain.
+          It&apos;s in the sealed box. GAINS is outside, pressed against the
+          glass, vibrating. Nothing leaves the box; only the verdict is recorded
+          on-chain. Verdict in a few seconds.
         </p>
         <div className="rounded-xl border border-accent/30 bg-accent-deep/10 p-4">
           <StatusTimeline active={status.step} />
@@ -365,13 +367,17 @@ function EvidenceUploadInner({
   if (status.kind === "result" && status.verified && status.recorded) {
     return (
       <div className="space-y-3">
-        <div className="rounded-xl border border-accent/40 bg-accent-deep/40 p-4">
-          <p className="text-base font-semibold text-accent">
-            Record verified. Your bounty is on its way.
+        <div className="rounded-xl border-2 border-gold/50 bg-accent-deep/40 p-4">
+          <Stamp tone="approved">Claim approved</Stamp>
+          {/* Quiet zone: the verdict, reason, and confidence are stated plainly
+              and exactly. The GAINS line sits below the facts, never on them. */}
+          <p className="mt-3 text-base font-semibold text-accent">
+            Verified: goal achieved.
           </p>
           <p className="mt-1 text-sm text-foreground/80">{status.reason}</p>
           <p className="mt-2 text-xs uppercase tracking-wide text-muted">
-            {CONFIDENCE_LABELS[status.confidence]} · Verified privately in a TEE
+            {CONFIDENCE_LABELS[status.confidence]} · Checked privately in the
+            sealed box
           </p>
           {status.txHash !== null ? (
             <a
@@ -383,6 +389,10 @@ function EvidenceUploadInner({
               View payout transaction on Arcscan
             </a>
           ) : null}
+          <p className="mt-3 text-sm text-muted">
+            GAINS is screaming into a towel so he doesn&apos;t scare your
+            neighbors. Go again.
+          </p>
         </div>
       </div>
     );

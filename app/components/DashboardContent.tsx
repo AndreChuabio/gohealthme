@@ -96,12 +96,12 @@ async function fetchJoinedPools(address: `0x${string}`): Promise<JoinedPool[]> {
 }
 
 function resultLabel(p: ParticipantInfo): { text: string; tone: "accent" | "muted" | "warning" } {
-  if (!p.resultRecorded) return { text: "Pending verification", tone: "warning" };
+  if (!p.resultRecorded) return { text: "Checking your proof", tone: "warning" };
   if (p.verdict) {
     const multiplier = (p.multiplierBps / 10_000).toFixed(2);
-    return { text: `Achieved at ${multiplier}x`, tone: "accent" };
+    return { text: `Verified — paid at ${multiplier}x`, tone: "accent" };
   }
-  return { text: "Goal missed", tone: "muted" };
+  return { text: "Not verified this round", tone: "muted" };
 }
 
 function ConnectButton({
@@ -147,7 +147,7 @@ function StreakCard({
 
   return (
     <section className="rounded-2xl border border-edge bg-surface p-5">
-      <h2 className="text-lg font-semibold">Streak progress</h2>
+      <h2 className="text-lg font-semibold">Your streak</h2>
       {healthQuery.isLoading ? (
         <div className="mt-3 space-y-2">
           <Skeleton className="h-8 w-40" />
@@ -168,8 +168,9 @@ function StreakCard({
       ) : !healthQuery.data.progress.connected ? (
         <>
           <p className="mt-3 rounded-xl border border-dashed border-edge p-4 text-sm text-muted">
-            No wearable connected yet. Link a provider (WHOOP, Oura, Fitbit,
-            Garmin…) to start tracking your streak toward the bounty.
+            No wearable linked yet, so there&apos;s no streak to brag about.
+            Connect one (WHOOP, Oura, Fitbit, Garmin) and GAINS starts keeping
+            receipts.
           </p>
           <ConnectButton address={address} />
         </>
@@ -237,9 +238,10 @@ function RecentDataCard({ address }: { address: `0x${string}` }) {
 
   return (
     <section className="rounded-2xl border border-edge bg-surface p-5">
-      <h2 className="text-lg font-semibold">Latest synced data</h2>
+      <h2 className="text-lg font-semibold">Straight from your wearable</h2>
       <p className="mt-1 text-sm text-muted">
-        Pulled live from your linked provider via Junction.
+        Live from your linked provider. These numbers are exactly what it
+        reported. GAINS does not get a vote.
       </p>
       <div className="mt-4 grid gap-4 sm:grid-cols-2">
         {data.sleep.length > 0 && (
@@ -302,8 +304,8 @@ export default function DashboardContent() {
   if (!authenticated || address === null) {
     return (
       <EmptyState
-        title="Sign in to see your goals"
-        detail="Your joined pools, streak progress, and payouts live here once you sign in."
+        title="GAINS doesn't know you yet. Fix that."
+        detail="Sign in and your goals, your streak, and every dollar you've won all show up right here. GAINS will pretend he wasn't waiting."
         action={
           <button
             type="button"
@@ -344,14 +346,14 @@ export default function DashboardContent() {
           />
         ) : (joinedQuery.data ?? []).length === 0 ? (
           <EmptyState
-            title="You have not joined a pool yet"
-            detail="Pick a sponsor-funded goal, verify with World ID, and start earning."
+            title="Zero goals. Zero dollars. GAINS is pacing."
+            detail="Right now there's free money sitting in pools for stuff your body wants to do anyway, and you're in none of them. Pick a goal, prove you're human, start getting paid."
             action={
               <Link
                 href="/pools"
-                className="inline-block rounded-xl bg-accent-strong px-6 py-3 text-sm font-semibold text-background hover:bg-accent"
+                className="gains-pop inline-block rounded-xl bg-accent-strong px-6 py-3 text-sm font-semibold text-background transition-transform hover:bg-accent active:scale-[0.98]"
               >
-                Browse pools
+                Show me the money goals
               </Link>
             }
           />
