@@ -23,7 +23,8 @@
  *   │  3. parse the verdict JSON from `output` (strip the ```json fence)                      │
  *   │        → { verified, confidence, reason, metric_value, threshold }                      │
  *   │  4. digest = resources[0].response_digest  (the TEE inference transcript hash)          │
- *   │  5. goalId = keccak256(abi.encode(poolId, user))   [matches HealthVerdict.computeGoalId]│
+ *   │  5. goalId = keccak256(abi.encode(pools, poolId, user, periodStart))                    │
+ *   │        [matches HealthVerdict.computeGoalId / HealthPools.computeGoalId]                │
  *   │  6. encodeAbiParameters(bytes32 goalId, bool verified, uint8 confidence,                │
  *   │                         bytes32 digest, uint16 bitmap)                                  │
  *   │  7. runtime.report(...) → DON-signed report  →  EVMClient.writeReport(...)              │
@@ -70,10 +71,22 @@ interface AuthorizedKeyConfig {
 
 /** Shape of wf-goal-verification/config.json. */
 interface WorkflowConfig {
+  /**
+   * HealthPools instance that will consume this verdict. Part of the
+   * deterministic goalId — it domain-separates the shared HealthVerdict registry
+   * across pool deployments. See computeGoalId.
+   */
+  poolsAddress: Address
   /** Pool the goal belongs to. Part of the deterministic goalId. */
   poolId: number
   /** Participant whose goal is being verified. Part of the deterministic goalId. */
   user: Address
+  /**
+   * Pool period start, unix seconds. Part of the deterministic goalId — it
+   * scopes the verdict to one period so a recurring pool is not limited to a
+   * single verdict for all time. Must equal the pool's on-chain periodStart.
+   */
+  periodStart: number
   /** Receiver contract: HealthVerdict on Arc. Zero address until deployed (see README). */
   healthVerdictAddress: string
   /** Chain selector for the receiver chain (Arc testnet). */
@@ -176,16 +189,31 @@ const toBytes32 = (hex: string): Hex => {
 
 /**
  * computeGoalId — must match HealthVerdict.computeGoalId:
- *   keccak256(abi.encode(uint256 poolId, address participant))
+ *   keccak256(abi.encode(address pools, uint256 poolId,
+ *                        address participant, uint64 periodStart))
+ *
+ * Equivalently HealthPools.computeGoalId(poolId, participant), which reads
+ * periodStart from its own storage and uses address(this) as `pools`.
+ *
+ * `pools` domain-separates the shared HealthVerdict registry so pool id 1 on one
+ * HealthPools deployment cannot collide with pool id 1 on another. `periodStart`
+ * scopes the verdict to a single pool period.
  */
-const computeGoalId = (poolId: number, user: Address): Hex =>
+const computeGoalId = (
+  pools: Address,
+  poolId: number,
+  user: Address,
+  periodStart: number,
+): Hex =>
   keccak256(
     encodeAbiParameters(
       [
+        { name: 'pools', type: 'address' },
         { name: 'poolId', type: 'uint256' },
         { name: 'participant', type: 'address' },
+        { name: 'periodStart', type: 'uint64' },
       ],
-      [BigInt(poolId), user],
+      [pools, BigInt(poolId), user, BigInt(periodStart)],
     ),
   )
 
@@ -227,8 +255,8 @@ const onInferenceCallback = (
   }
   const digest = toBytes32(digestSource)
 
-  // 5) Deterministic goalId, shared with HealthVerdict on chain.
-  const goalId = computeGoalId(cfg.poolId, cfg.user)
+  // 5) Deterministic goalId, shared with HealthVerdict + HealthPools on chain.
+  const goalId = computeGoalId(cfg.poolsAddress, cfg.poolId, cfg.user, cfg.periodStart)
   runtime.log(`goalId=${goalId} digest=${digest}`)
 
   // 6) Facet bitmap for the demo: AI attested (bit2) + wearable (bit0).

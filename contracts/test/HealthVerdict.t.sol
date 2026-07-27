@@ -199,9 +199,38 @@ contract HealthVerdictTest is Test {
     // ------------------------------------------------------------ helpers
 
     function test_computeGoalId_matchesKeccak() public {
+        address poolsAddr = makeAddr("pools");
         uint256 poolId = 7;
         address participant = makeAddr("participant");
-        assertEq(reg.computeGoalId(poolId, participant), keccak256(abi.encode(poolId, participant)));
+        uint64 periodStart = 1_700_000_000;
+        assertEq(
+            reg.computeGoalId(poolsAddr, poolId, participant, periodStart),
+            keccak256(abi.encode(poolsAddr, poolId, participant, periodStart))
+        );
+    }
+
+    /// The pool contract address is in the preimage, so two HealthPools
+    /// deployments sharing this registry cannot collide on (poolId, participant).
+    /// Without it, a verdict recorded against one deployment would satisfy
+    /// canSettle() for the same pool id on another.
+    function test_computeGoalId_domainSeparatedByPoolsContract() public {
+        address participant = makeAddr("participant");
+        assertTrue(
+            reg.computeGoalId(makeAddr("poolsA"), 1, participant, 1_700_000_000)
+                != reg.computeGoalId(makeAddr("poolsB"), 1, participant, 1_700_000_000)
+        );
+    }
+
+    /// periodStart is in the preimage, so the same participant in the same pool
+    /// gets a distinct goal id each period — a recurring pool is not capped at
+    /// one verdict for all time.
+    function test_computeGoalId_distinctPerPeriod() public {
+        address poolsAddr = makeAddr("pools");
+        address participant = makeAddr("participant");
+        assertTrue(
+            reg.computeGoalId(poolsAddr, 1, participant, 1_700_000_000)
+                != reg.computeGoalId(poolsAddr, 1, participant, 1_700_604_800)
+        );
     }
 
     // ------------------------------------------------ CRE onReport path
@@ -314,16 +343,27 @@ contract HealthVerdictTest is Test {
 
     /// Cross-check: the exact report body the wf-goal-verification workflow
     /// produces (captured from `bun run dry-run` on simulation/callback-payload.json)
-    /// must decode through onReport into the expected verdict. This pins the
-    /// off-chain encodeAbiParameters output to the on-chain abi.decode shape.
+    /// must decode through onReport into the expected verdict. This pins viem's
+    /// off-chain encodeAbiParameters output to the on-chain abi.decode shape —
+    /// a Solidity-only round trip would not catch an encoder mismatch.
+    ///
+    /// REGENERATING: the goalId depends on cre/wf-goal-verification/config.json
+    /// (poolsAddress, poolId, user, periodStart). If that config changes, re-run
+    /// `cd cre && bun run dry-run` and update WF_* plus the report body below.
     function test_onReport_decodesWorkflowEncodedReport() public {
         MockKeystoneForwarder fwd = new MockKeystoneForwarder();
         reg.setForwarder(address(fwd));
 
-        // From cre dry-run: goalId for poolId=1, user=0x8ba1...DBA72;
-        // digest = response_digest; verified=true; confidence=HIGH(2); bitmap=5.
+        // Mirrors cre/wf-goal-verification/config.json.
+        address wfPools = 0xc4274eF2cBe28f77Af31b980055Cc1171818390C;
+        uint256 wfPoolId = 1;
+        address wfUser = 0x8ba1f109551bD432803012645Ac136ddd64DBA72;
+        uint64 wfPeriodStart = 1785190895;
+
+        // From cre dry-run: verified=true; confidence=HIGH(2); bitmap=5;
+        // digest = resources[0].response_digest.
         bytes memory workflowReport =
-            hex"7611f4f43bd80cbc242bf4a6e62d546adbb8eaff465c8fdb0cdeb486648b720a"
+            hex"819ca6183dcc2d337646fd3631791611d0e17ee9474ccd4737c10c990beea692"
             hex"0000000000000000000000000000000000000000000000000000000000000001"
             hex"0000000000000000000000000000000000000000000000000000000000000002"
             hex"0a0124911560a2236e432d30c3e2a90b0666f4c84b40bf10ba01960595c6ecea"
@@ -331,8 +371,8 @@ contract HealthVerdictTest is Test {
 
         fwd.forward(address(reg), bytes(""), workflowReport);
 
-        bytes32 expectedGoalId = reg.computeGoalId(1, 0x8ba1f109551bD432803012645Ac136ddd64DBA72);
-        assertEq(expectedGoalId, bytes32(uint256(0x7611f4f43bd80cbc242bf4a6e62d546adbb8eaff465c8fdb0cdeb486648b720a)));
+        bytes32 expectedGoalId = reg.computeGoalId(wfPools, wfPoolId, wfUser, wfPeriodStart);
+        assertEq(expectedGoalId, bytes32(uint256(0x819ca6183dcc2d337646fd3631791611d0e17ee9474ccd4737c10c990beea692)));
 
         HealthVerdict.Verdict memory v = reg.getVerdict(expectedGoalId);
         assertTrue(v.verified);

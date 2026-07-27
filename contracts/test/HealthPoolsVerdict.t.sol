@@ -120,10 +120,32 @@ contract HealthPoolsVerdictTest is Test {
         assertEq(pools.healthVerdict(), address(0));
     }
 
-    function test_computeGoalId_matchesRegistry() public view {
-        bytes32 a = pools.computeGoalId(1, alice);
-        bytes32 b = verdict.computeGoalId(1, alice);
+    /// HealthPools.computeGoalId (reads periodStart from storage, uses
+    /// address(this)) must equal HealthVerdict.computeGoalId with those values
+    /// passed explicitly. The off-chain pipeline derives the id from the
+    /// registry formula, so any drift here silently breaks settlement gating.
+    function test_computeGoalId_matchesRegistry() public {
+        uint256 poolId = _createAndJoinTwo(1);
+        bytes32 a = pools.computeGoalId(poolId, alice);
+        bytes32 b = verdict.computeGoalId(address(pools), poolId, alice, periodStart);
         assertEq(a, b);
+    }
+
+    /// Same pool id, same participant, two HealthPools deployments sharing one
+    /// registry: the goal ids must differ, or a verdict earned on one deployment
+    /// would unlock settlement on the other.
+    function test_computeGoalId_domainSeparatedAcrossPoolDeployments() public {
+        uint256 poolId = _createAndJoinTwo(1);
+
+        HealthPools other = new HealthPools(address(usdc), oracle);
+        vm.startPrank(creator);
+        usdc.approve(address(other), type(uint256).max);
+        uint256 otherPoolId =
+            other.createPool("sleep-streak", "7h sleep, 7 nights", FEE, periodStart, periodEnd, 1, FUNDING);
+        vm.stopPrank();
+
+        assertEq(poolId, otherPoolId); // identical pool id on both deployments
+        assertTrue(pools.computeGoalId(poolId, alice) != other.computeGoalId(otherPoolId, alice));
     }
 
     // --------------------------------------------------- gate OFF (default)

@@ -64,14 +64,26 @@ const toBytes32 = (hex: string): Hex => {
   return `0x${h.toLowerCase()}` as Hex
 }
 
-const computeGoalId = (poolId: number, user: Address): Hex =>
+/**
+ * Must match HealthVerdict.computeGoalId / HealthPools.computeGoalId:
+ *   keccak256(abi.encode(address pools, uint256 poolId,
+ *                        address participant, uint64 periodStart))
+ */
+const computeGoalId = (
+  pools: Address,
+  poolId: number,
+  user: Address,
+  periodStart: number,
+): Hex =>
   keccak256(
     encodeAbiParameters(
       [
+        { name: 'pools', type: 'address' },
         { name: 'poolId', type: 'uint256' },
         { name: 'participant', type: 'address' },
+        { name: 'periodStart', type: 'uint64' },
       ],
-      [BigInt(poolId), user],
+      [pools, BigInt(poolId), user, BigInt(periodStart)],
     ),
   )
 
@@ -82,8 +94,10 @@ const configPath = resolve(__dirname, '../wf-goal-verification/config.json')
 
 const callback = JSON.parse(readFileSync(payloadPath, 'utf8')) as InferenceCallback
 const config = JSON.parse(readFileSync(configPath, 'utf8')) as {
+  poolsAddress: Address
   poolId: number
   user: Address
+  periodStart: number
 }
 
 if (callback.status !== 'completed') {
@@ -100,7 +114,12 @@ const digestSource =
   callback.resource_summaries?.[0]?.digest
 if (!digestSource) throw new Error('callback missing response_digest and document digest')
 const digest = toBytes32(digestSource)
-const goalId = computeGoalId(config.poolId, config.user)
+const goalId = computeGoalId(
+  config.poolsAddress,
+  config.poolId,
+  config.user,
+  config.periodStart,
+)
 const bitmap = FACET_AI_ATTESTED | FACET_WEARABLE
 
 const encodedReport = encodeAbiParameters(REPORT_ABI, [

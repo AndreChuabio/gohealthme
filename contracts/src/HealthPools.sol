@@ -373,8 +373,15 @@ contract HealthPools {
 
     /// @notice Deterministic goal id shared with the off-chain CRE pipeline and
     ///         the HealthVerdict registry. All three must agree on this hash.
-    function computeGoalId(uint256 poolId, address participant) public pure returns (bytes32) {
-        return keccak256(abi.encode(poolId, participant));
+    ///
+    /// @dev Equivalent to HealthVerdict.computeGoalId(address(this), poolId,
+    ///      participant, pool.periodStart). Reading periodStart from storage here
+    ///      keeps this contract the single on-chain source of truth for the id —
+    ///      off-chain callers ask for the goal id rather than re-deriving the
+    ///      formula and risking drift. See HealthVerdict.computeGoalId for why
+    ///      the pool contract address and periodStart are in the preimage.
+    function computeGoalId(uint256 poolId, address participant) public view returns (bytes32) {
+        return keccak256(abi.encode(address(this), poolId, participant, pools[poolId].periodStart));
     }
 
     /// @dev Aggregate achiever stats for settlement. Bounded by MAX_PARTICIPANTS.
