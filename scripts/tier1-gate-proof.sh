@@ -19,7 +19,12 @@ export PATH="$PATH:$HOME/.foundry/bin"
 
 RPC=https://rpc.testnet.arc.network
 USDC=0x3600000000000000000000000000000000000000
-HV=0x4E65F11b65b53A328713B40C02A1BC1F421E1c51
+# Registry to gate against. Synced into .env by scripts/demo-reset.sh, so this
+# proof always runs against the currently-wired HealthVerdict rather than a
+# stale hardcoded one.
+HV=$(grep '^HEALTH_VERDICT_ADDRESS=' .env | head -1 | cut -d= -f2- | tr -d '"' | tr -d ' ')
+[ -n "$HV" ] || { echo "ABORT: HEALTH_VERDICT_ADDRESS not set in .env — run ./scripts/demo-reset.sh first" >&2; exit 1; }
+echo "registry under test: $HV"
 
 DPK=$(grep '^DEPLOYER_PRIVATE_KEY=' .env | head -1 | cut -d= -f2- | tr -d '"' | tr -d ' ')
 OPK=$(grep '^ORACLE_SIGNER_PRIVATE_KEY=' .env | head -1 | cut -d= -f2- | tr -d '"' | tr -d ' ')
