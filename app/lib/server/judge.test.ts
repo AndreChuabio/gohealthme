@@ -111,6 +111,25 @@ describe("fail-closed verdict", () => {
     expect(verdict?.verified).toBe(false);
   });
 
+  it("(b3) a CLIENT-SUPPLIED mock id is refused even when a real key is configured", async () => {
+    // attesterId arrives straight from the /api/evidence/result request body, so
+    // a caller can hand pollInference a "mock-" id directly without ever going
+    // through submitInference. If that short-circuited to the mock verdict,
+    // anyone could mint {verified:true, confidence:high} for a goal they never
+    // met, have it written to HealthPools at a 2x multiplier, and open the
+    // HealthVerdict settlement gate. Having a real API key configured must not
+    // change that — the check happens before the key is ever read.
+    vi.stubEnv("CONFIDENTIAL_AI_API_KEY", "test-key");
+    vi.stubEnv("DEMO_MODE", "");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    for (const forged of ["mock-", "mock-0", `mock-${"x".repeat(48)}`]) {
+      const { status, verdict } = await pollInference(forged, GOAL);
+      expect(status, forged).toBe("failed");
+      expect(verdict?.verified, forged).toBe(false);
+    }
+  });
+
   it("(c) DEMO_MODE on with no key -> mock path still works (verified:true)", async () => {
     vi.stubEnv("CONFIDENTIAL_AI_API_KEY", "");
     vi.stubEnv("DEMO_MODE", "true");
