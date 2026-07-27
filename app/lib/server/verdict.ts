@@ -14,7 +14,6 @@ import {
   createPublicClient,
   createWalletClient,
   defineChain,
-  encodeAbiParameters,
   http,
   keccak256,
   stringToBytes,
@@ -41,11 +40,23 @@ const HEALTH_VERDICT_ABI = [
   },
 ] as const;
 
-// Facet bits mirror HealthVerdict.sol. World ID gates the join and the attester
-// proves the document, so a recorded verdict carries both facets.
-const FACET_WORLD_ID = 1 << 1; // bit1
-const FACET_AI_ATTESTED = 1 << 2; // bit2
-const DEMO_BITMAP = FACET_WORLD_ID | FACET_AI_ATTESTED; // 6
+// Facet bits mirror HealthVerdict.sol FACET_* constants.
+const FACET_WEARABLE = 1 << 0; // bit0: wearable/device data verified
+const FACET_WORLD_ID = 1 << 1; // bit1: World ID confirmed
+const FACET_AI_ATTESTED = 1 << 2; // bit2: AI attested (TEE inference)
+
+/**
+ * What actually backed a verdict. The bitmap is the on-chain provenance record,
+ * so it has to describe the evidence that was really used — tagging a
+ * deterministic wearable streak check as AI-attested would write a false claim
+ * to the chain, where anyone can read it back.
+ */
+export const VERDICT_FACETS = {
+  /** Document judged by the Confidential AI attester (TEE inference). */
+  document: FACET_WORLD_ID | FACET_AI_ATTESTED,
+  /** Wearable streak checked against Junction provider data. No AI involved. */
+  wearable: FACET_WORLD_ID | FACET_WEARABLE,
+} as const;
 
 const CONFIDENCE_U8: Record<Confidence, number> = { low: 0, medium: 1, high: 2 };
 
@@ -64,17 +75,44 @@ function oracleAccount() {
   return privateKeyToAccount((pk.startsWith("0x") ? pk : `0x${pk}`) as Hex);
 }
 
-/** keccak256(abi.encode(uint256 poolId, address user)) — matches HealthVerdict.computeGoalId. */
-export function computeGoalId(poolId: bigint, user: Address): Hex {
-  return keccak256(
-    encodeAbiParameters(
-      [
-        { name: "poolId", type: "uint256" },
-        { name: "participant", type: "address" },
-      ],
-      [poolId, user],
-    ),
-  );
+const HEALTH_POOLS_GOALID_ABI = [
+  {
+    type: "function",
+    name: "computeGoalId",
+    stateMutability: "view",
+    inputs: [
+      { name: "poolId", type: "uint256" },
+      { name: "participant", type: "address" },
+    ],
+    outputs: [{ name: "", type: "bytes32" }],
+  },
+] as const;
+
+/**
+ * Ask HealthPools for the goal id instead of re-deriving it here.
+ *
+ * The id is keccak256(abi.encode(pools, poolId, participant, periodStart)). It
+ * depends on the pool's on-chain periodStart, which this server does not
+ * otherwise track, and on the pool contract address, which domain-separates the
+ * shared registry. Reading it from the contract keeps exactly ONE source of
+ * truth for the formula: if it ever changes again, the registry write and the
+ * settlement gate cannot silently desync.
+ */
+export async function computeGoalId(
+  poolId: bigint,
+  user: Address,
+): Promise<Hex> {
+  const pools = requireEnv("HEALTH_POOLS_ADDRESS") as Address;
+  const publicClient = createPublicClient({
+    chain: arcTestnet(),
+    transport: http(),
+  });
+  return publicClient.readContract({
+    address: pools,
+    abi: HEALTH_POOLS_GOALID_ABI,
+    functionName: "computeGoalId",
+    args: [poolId, user],
+  });
 }
 
 export type RecordVerdictOutcome =
@@ -82,11 +120,33 @@ export type RecordVerdictOutcome =
   | { status: "already-recorded"; goalId: Hex }
   | { status: "skipped"; reason: string };
 
+/** Attempts for the registry write before giving up and surfacing the failure. */
+const RECORD_ATTEMPTS = 3;
+/** Backoff before attempts 2 and 3. Keeps the polling endpoint responsive. */
+const RETRY_BACKOFF_MS = [400, 1200];
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 /**
- * Write the verdict into the HealthVerdict registry (the canSettle gate). No-op
- * when HEALTH_VERDICT_ADDRESS is unset (registry not wired -> back-compat).
- * Idempotent: a goalId already recorded resolves as "already-recorded". Callers
- * should treat a thrown error as non-fatal and not break the user flow.
+ * Write the verdict into the HealthVerdict registry (the canSettle gate).
+ *
+ * THROWS on failure — callers MUST NOT swallow it. When HealthPools has a
+ * healthVerdict registry configured, settle() pays a participant only if
+ * canSettle(goalId) is true, so a missing registry verdict means that
+ * participant receives NOTHING even though their result is recorded on chain.
+ * Reporting success after a failed write silently costs a verified user their
+ * entire payout.
+ *
+ * No-op (status "skipped") when HEALTH_VERDICT_ADDRESS is unset — that is the
+ * explicit opt-out for the pre-gate, oracle-only deployment. scripts/demo-reset.sh
+ * keeps that env var in lockstep with the on-chain gate.
+ *
+ * Idempotent: a goalId already on chain resolves as "already-recorded", which is
+ * the desired end state and therefore success, not failure. Safe to call on every
+ * poll — that is what makes a failed write recoverable.
+ *
+ * Transient RPC/network failures are retried in-process; the caller's poll loop
+ * provides a second, longer-horizon retry on top of that.
  */
 export async function recordVerdict(
   poolId: bigint,
@@ -94,40 +154,60 @@ export async function recordVerdict(
   verified: boolean,
   confidence: Confidence,
   attesterId: string,
+  facets: number = VERDICT_FACETS.document,
 ): Promise<RecordVerdictOutcome> {
   const registry = optionalEnv("HEALTH_VERDICT_ADDRESS", "");
   if (registry === "") {
     return { status: "skipped", reason: "HEALTH_VERDICT_ADDRESS not set" };
   }
 
-  const goalId = computeGoalId(poolId, user);
+  // A failure here throws to the caller, which surfaces it. The frontend re-polls,
+  // so a transient read failure self-heals on the next poll.
+  const goalId = await computeGoalId(poolId, user);
   const digest = keccak256(stringToBytes(attesterId)); // advisory content hash
   const chain = arcTestnet();
   const account = oracleAccount();
   const wallet = createWalletClient({ account, chain, transport: http() });
   const publicClient = createPublicClient({ chain, transport: http() });
 
-  try {
-    const { request } = await publicClient.simulateContract({
-      account,
-      address: registry as Address,
-      abi: HEALTH_VERDICT_ABI,
-      functionName: "recordVerdict",
-      args: [goalId, verified, CONFIDENCE_U8[confidence], digest, DEMO_BITMAP],
-    });
-    const txHash = await wallet.writeContract(request);
-    const receipt = await publicClient.waitForTransactionReceipt({
-      hash: txHash,
-    });
-    if (receipt.status !== "success") {
-      throw new Error(`recordVerdict tx ${txHash} reverted`);
+  let lastError: Error | null = null;
+
+  for (let attempt = 1; attempt <= RECORD_ATTEMPTS; attempt++) {
+    if (attempt > 1) {
+      await sleep(RETRY_BACKOFF_MS[attempt - 2] ?? 1200);
     }
-    return { status: "recorded", txHash, goalId };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (/ALREADY_RECORDED/.test(msg)) {
-      return { status: "already-recorded", goalId };
+
+    try {
+      const { request } = await publicClient.simulateContract({
+        account,
+        address: registry as Address,
+        abi: HEALTH_VERDICT_ABI,
+        functionName: "recordVerdict",
+        args: [goalId, verified, CONFIDENCE_U8[confidence], digest, facets],
+      });
+      const txHash = await wallet.writeContract(request);
+      const receipt = await publicClient.waitForTransactionReceipt({
+        hash: txHash,
+      });
+      if (receipt.status !== "success") {
+        throw new Error(`recordVerdict tx ${txHash} reverted`);
+      }
+      return { status: "recorded", txHash, goalId };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Already on chain — the end state we wanted. Stop, do not retry.
+      if (/ALREADY_RECORDED/.test(msg)) {
+        return { status: "already-recorded", goalId };
+      }
+      lastError = err instanceof Error ? err : new Error(msg);
+      console.warn(
+        `[verdict] recordVerdict attempt ${attempt}/${RECORD_ATTEMPTS} failed for goal ${goalId}: ${msg}`,
+      );
     }
-    throw err instanceof Error ? err : new Error(msg);
   }
+
+  throw new Error(
+    `recordVerdict failed after ${RECORD_ATTEMPTS} attempts for goal ${goalId} ` +
+      `(pool ${poolId}, user ${user}): ${lastError?.message ?? "unknown error"}`,
+  );
 }
