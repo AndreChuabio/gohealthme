@@ -197,22 +197,55 @@ This reproduces the workflow's deterministic core (parse callback, derive verdic
 - **`cre workflow simulate` requires authentication on CLI v1.20.0.** See
   `sim-output/BLOCKER.md`.
 
-### Needs the Chainlink booth for a LIVE DON write
+### Live DON write — booth dependencies RESOLVED (2026-07-27)
 
-1. **KeystoneForwarder address on Arc.** `EVMClient.writeReport` forwards the
-   DON-signed report through the KeystoneForwarder, which calls `onReport`.
-   `HealthVerdict.setForwarder(<arc-forwarder>)` must point at it (use the
-   mock-forwarder address when writing with `--broadcast`, the production
-   Forwarder for a real DON). Confirm the Arc forwarder address at the booth.
-2. **Chain selector / chain-name for Arc.** `project.yaml` uses
-   `chain-name: arc-testnet`; `config.json` uses `chainSelector: "5042002"`.
-   Confirm the chain-name registered in Chainlink's chain-selectors registry and
-   the matching selector the DON expects (use `--allow-unknown-chains` if Arc is
-   experimental).
-3. **Receiver wiring.** Deploy `HealthVerdict`, call `setForwarder(...)`, and set
-   `config.healthVerdictAddress` to the deployment. Until then leave it as the
-   zero address: the workflow produces the signed report and skips `writeReport`,
-   so simulation still completes.
+Both values the hackathon notes deferred to "ask at the booth" are now public in
+Chainlink's docs, and the forwarder is confirmed deployed on Arc testnet.
+
+| what | value | source |
+|---|---|---|
+| Arc testnet KeystoneForwarder | `0x76c9cf548b4179F8901cda1f8623568b58215E62` | [CRE forwarder directory](https://docs.chain.link/cre/guides/workflow/using-evm-client/forwarder-directory-ts) — verified: 17KB of code live on Arc |
+| Arc testnet chain selector | `3034092155422581607` | [CCIP directory: arc-testnet](https://docs.chain.link/ccip/directory/testnet/chain/arc-testnet) |
+| CRE chain-name | `arc-testnet` | forwarder directory |
+
+**Bug this surfaced:** `config.json` previously set `chainSelector: "5042002"`,
+which is Arc's **chain id**, not its Chainlink **chain selector**. They are
+different namespaces. `new cre.capabilities.EVMClient(BigInt(chainSelector))`
+would not have resolved a chain, so any live `writeReport` would have failed.
+Fixed to `3034092155422581607`.
+
+`config.healthVerdictAddress` now points at the deployed registry
+`0x4E65F11b65b53A328713B40C02A1BC1F421E1c51`, so `receiverUnset` is false and the
+workflow will attempt the real `writeReport` instead of returning encoded-only.
+
+### Remaining to actually go live
+
+1. **`HealthVerdict.setForwarder(0x76c9cf548b4179F8901cda1f8623568b58215E62)`** —
+   on-chain owner tx from the deployer `0xc278…04e1`. Until this lands,
+   `forwarder == address(0)` and every `onReport` call reverts `NOT_FORWARDER`.
+   Note `setForwarder` requires a non-zero address, so the CRE path cannot be
+   turned back **off** once enabled — only re-pointed at another address.
+2. **`authorizedKeys` must be non-empty to deploy.** An empty list is valid
+   *only* for `cre workflow simulate`; the CRE gateway rejects a **deployed**
+   HTTP trigger that has no authorized keys. Populate it with the EVM address
+   whose key signs the Confidential AI Attester's `cre_callback` POST, as
+   `{ "type": "KEY_TYPE_ECDSA_EVM", "publicKey": "<0x… EVM address>" }`. This is
+   the one value still outstanding — it comes from the Attester service, not from
+   the forwarder directory.
+3. **Gate a HealthPools that can actually consult the registry.** The canonical
+   prod instance `0x72D3…2064` predates the gate selectors — `healthVerdict()`
+   reverts on it — so it can never be wired. Only the side instance
+   `0x5bf7…2cF4` is gated. Closing this needs a prod redeploy + migration of the
+   15 pools currently live on `0x72D3…2064`.
+
+### Verified against the live deployment (2026-07-27)
+
+- Dry-run `goalId` `0x7611f4f4…648b720a` **equals** live
+  `HealthVerdict.computeGoalId(1, 0x8ba1…BA72)` on Arc — the off-chain pipeline
+  and the deployed contract agree.
+- The workflow's encoded report body decodes to exactly
+  `(goalId, true, 2, 0x0a012491…95c6ecea, 5)` under `onReport`'s tuple.
+- Contract suite: 62/62 Foundry tests passing (forge 1.7.1).
 
 ## Config reference (`wf-goal-verification/config.json`)
 
@@ -223,4 +256,4 @@ This reproduces the workflow's deterministic core (parse callback, derive verdic
 | `healthVerdictAddress` | receiver; zero address = report-only (not yet deployed) |
 | `chainSelector` | receiver chain selector (Arc) |
 | `writeGasLimit` | gas limit for the `writeReport` forward |
-| `authorizedKeys` | ECDSA keys allowed to sign incoming HTTP trigger requests (empty = accept any, for simulation) |
+| `authorizedKeys` | EVM addresses (`KEY_TYPE_ECDSA_EVM`) allowed to sign incoming HTTP trigger requests. Empty is valid **only** for `cre workflow simulate`; a deployed workflow with an empty list is rejected by the CRE gateway. Must be populated before deploy — see "Remaining to actually go live". |

@@ -19,3 +19,9 @@ contracts/broadcast/
 __pycache__/
 .vercel
 .env*
+
+# agent tooling + state (never commit AI instructions or agent memory)
+.claude/
+
+# cre build artifact
+cre/wf-goal-verification/.cre_build_tmp.js

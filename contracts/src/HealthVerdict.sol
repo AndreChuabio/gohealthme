@@ -266,8 +266,27 @@ contract HealthVerdict is IReceiver {
     // -------------------------------------------------------------- helpers
 
     /// @notice Deterministic goal id shared by the off-chain CRE pipeline and the
-    ///         on-chain contracts. Both sides must compute it identically.
-    function computeGoalId(uint256 poolId, address participant) external pure returns (bytes32) {
-        return keccak256(abi.encode(poolId, participant));
+    ///         on-chain contracts. Every side must compute it identically.
+    ///
+    /// @dev Domain-separated by the HealthPools instance. This registry is a
+    ///      standalone contract that several pool contracts may share, so keying
+    ///      on (poolId, participant) alone would let pool id 1 on one HealthPools
+    ///      collide with pool id 1 on another — a verdict recorded against one
+    ///      deployment would satisfy canSettle() on the other. Including `pools`
+    ///      scopes each verdict to the contract that will consume it.
+    ///
+    ///      `periodStart` scopes the verdict to the pool's period, so a recurring
+    ///      pool can carry one verdict per period rather than one for all time.
+    ///
+    ///      The goal's metric is deliberately NOT part of the id: a pool has a
+    ///      single goalSpec, so poolId already pins the metric, and hashing a
+    ///      free-form string would force identical canonicalization across
+    ///      Solidity and two TypeScript call sites for no disambiguation gain.
+    function computeGoalId(address pools, uint256 poolId, address participant, uint64 periodStart)
+        external
+        pure
+        returns (bytes32)
+    {
+        return keccak256(abi.encode(pools, poolId, participant, periodStart));
     }
 }

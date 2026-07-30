@@ -10,11 +10,22 @@
 //   - completed & not verified (or low) -> return the verdict, recorded: false
 //   - failed -> return the failed verdict, recorded: false
 //
+// Recording is TWO on-chain writes and both are required before a participant can
+// actually be paid:
+//   1. HealthPools.recordResult  — the oracle result
+//   2. HealthVerdict.recordVerdict — the Chainlink registry entry that
+//      HealthPools.settle() gates on via canSettle(goalId)
+// With the settlement gate enabled, step 2 failing means the participant receives
+// NOTHING at settlement. So recorded:true is returned only when BOTH have landed;
+// a step-2 failure returns recorded:false with a retryable error. Reporting
+// success on a failed step 2 would silently cost a verified user their payout.
+//
 // Stateless / Vercel-safe: there is NO server-side store. Record-once is enforced
-// by the contract, not server memory — a re-poll after recording catches the
-// HealthPools ALREADY_RECORDED revert and treats it as success, so double
-// polling never double-submits. A NOT_PARTICIPANT revert returns the verified
-// verdict with recorded:false and a "join the pool first" message.
+// by the contracts, not server memory — both writes are one-shot and their
+// ALREADY_RECORDED reverts are treated as success, so polling never double-submits
+// and a poll after a partial failure retries only the part that is missing. A
+// NOT_PARTICIPANT revert returns the verified verdict with recorded:false and a
+// "join the pool first" message.
 //
 // Request JSON:
 //   { attesterId: string, poolId: number|string, address: string, goalSpec: string }
@@ -28,7 +39,7 @@
 // Privacy: only the verdict (verified/confidence/reason) is returned and recorded
 // on-chain. Document bytes never reach this route.
 
-import { isAddress, type Address } from "viem";
+import { isAddress, type Address, type Hex } from "viem";
 import { recordResult } from "@/lib/server/oracle";
 import { recordVerdict } from "@/lib/server/verdict";
 import {
@@ -91,81 +102,84 @@ export async function POST(request: Request) {
       });
     }
 
-    // Record on-chain via the oracle signer.
     const multiplierBps = multiplierForConfidence(v.confidence);
+    const base = {
+      status: "completed" as const,
+      verified: v.verified,
+      confidence: v.confidence,
+      reason: v.reason,
+    };
+
+    // STEP 1 — the pool result on HealthPools. One-shot per participant per pool.
+    // ALREADY_RECORDED means an earlier poll already landed it; that is success,
+    // and we must still fall through to step 2 rather than returning here. The
+    // old code returned early on ALREADY_RECORDED, which meant a participant whose
+    // registry write had failed could NEVER get one — every subsequent poll
+    // short-circuited before reaching it and reported success.
+    let resultTxHash: Hex | undefined;
     try {
-      const txHash = await recordResult(
+      resultTxHash = await recordResult(
         BigInt(poolId),
         address as Address,
         true,
         multiplierBps,
       );
-
-      // Tier 1: also write the verdict into the HealthVerdict registry so
-      // HealthPools.settle() can gate on canSettle(goalId). Best-effort — a
-      // registry write must never break the payout flow. No-op until
-      // HEALTH_VERDICT_ADDRESS is set.
-      try {
-        const vr = await recordVerdict(
-          BigInt(poolId),
-          address as Address,
-          v.verified,
-          v.confidence,
-          attesterId,
-        );
-        console.log(`[verdict] HealthVerdict registry: ${vr.status}`);
-      } catch (e) {
-        console.error(
-          "[verdict] HealthVerdict record failed (non-fatal):",
-          e instanceof Error ? e.message : String(e),
-        );
-      }
-
-      return Response.json({
-        status: "completed",
-        verified: v.verified,
-        confidence: v.confidence,
-        reason: v.reason,
-        recorded: true,
-        txHash,
-      });
     } catch (err) {
       const message = errorMessage(err);
-
-      // Record-once: a re-poll after the verdict was already recorded reverts
-      // with ALREADY_RECORDED. Treat that as success — the result is on-chain.
-      if (message.includes("ALREADY_RECORDED")) {
-        return Response.json({
-          status: "completed",
-          verified: v.verified,
-          confidence: v.confidence,
-          reason: v.reason,
-          recorded: true,
-        });
-      }
 
       // recordResult requires the address to have JOINED the pool first.
       if (message.includes("NOT_PARTICIPANT")) {
         return Response.json({
-          status: "completed",
-          verified: v.verified,
-          confidence: v.confidence,
-          reason: v.reason,
+          ...base,
           recorded: false,
           error: `Document verified, but ${address} has not joined pool ${poolId}. Join the pool first, then re-submit your evidence.`,
         });
       }
 
-      // Any other on-chain failure: verdict stands, recording failed.
+      if (!message.includes("ALREADY_RECORDED")) {
+        return Response.json({
+          ...base,
+          recorded: false,
+          error: `Document verified, but recording on-chain failed: ${message}`,
+        });
+      }
+      // ALREADY_RECORDED — fall through to step 2.
+    }
+
+    // STEP 2 — the Chainlink verdict registry, which gates settlement.
+    //
+    // HealthPools.settle() pays a participant only when
+    // HealthVerdict.canSettle(goalId) is true. A missing registry verdict means
+    // this participant is paid NOTHING at settlement, so this write is REQUIRED,
+    // not best-effort, and a failure must never be reported as success. Calling it
+    // on every poll is what makes a previously-failed write recoverable.
+    try {
+      const vr = await recordVerdict(
+        BigInt(poolId),
+        address as Address,
+        v.verified,
+        v.confidence,
+        attesterId,
+      );
+      console.log(`[verdict] HealthVerdict registry: ${vr.status}`);
+    } catch (e) {
+      const message = errorMessage(e);
+      console.error(
+        `[verdict] registry write FAILED for pool ${poolId} / ${address} — ` +
+          `participant is NOT settleable until this succeeds: ${message}`,
+      );
       return Response.json({
-        status: "completed",
-        verified: v.verified,
-        confidence: v.confidence,
-        reason: v.reason,
+        ...base,
         recorded: false,
-        error: `Document verified, but recording on-chain failed: ${message}`,
+        txHash: resultTxHash,
+        error:
+          `Document verified and your result is on-chain, but the Chainlink verdict ` +
+          `registry write failed, so this goal cannot pay out yet. Re-submit to retry — ` +
+          `your result is already recorded and will not be duplicated. (${message})`,
       });
     }
+
+    return Response.json({ ...base, recorded: true, txHash: resultTxHash });
   } catch (err) {
     // Last-resort guard — the route must never crash.
     return jsonError(500, errorMessage(err));

@@ -388,3 +388,80 @@ Health data links via **Junction Link** (WHOOP/Oura/Fitbit/Garmin) — `/api/jun
 keyed by wallet address. The dashboard shows a **Connect health data** button when unlinked and a
 **Connect / switch provider** (relink) button when linked. A `400` on the progress feed = no linked
 provider for that wallet yet (or a Junction env/param issue), not a code bug.
+
+---
+
+# 2026-07-27 — Path B (Chainlink CRE) wired live + goalId schema change
+
+Supersedes the addresses in "Live on-chain" and open items 2-4 above. Productionization
+priority 3 ("production runs on the Chainlink confidential path, deployed not CLI-simulated")
+is now most of the way there.
+
+## The booth dependencies were never actually blockers
+
+Both values the hackathon notes deferred to the Chainlink booth are public documentation:
+
+- Arc testnet KeystoneForwarder: `0x76c9cf548b4179F8901cda1f8623568b58215E62`
+  (CRE forwarder directory). Verified: 17KB of live code at that address on Arc.
+- Arc testnet chain selector: `3034092155422581607` (CCIP directory).
+
+**Bug this surfaced:** `cre/wf-goal-verification/config.json` had
+`chainSelector: "5042002"` — that is Arc's **chain id**, not its Chainlink **chain
+selector**. Different namespaces. `EVMClient(BigInt(chainSelector))` would not have
+resolved a chain, so every live `writeReport` would have failed. Any earlier attempt to
+"just turn on path B" would have died here with a confusing error.
+
+## New canonical deployment (old one is dead)
+
+- HealthPools: `0xc4274eF2cBe28f77Af31b980055Cc1171818390C` (gate ON)
+- HealthVerdict: `0x9bf5e4b54361DEAca4314c1d8de3aeB30111F042` (forwarder SET)
+- Old prod `0x72D3…2064` is abandoned: it predates the gate selectors, so `healthVerdict()`
+  reverts on it and it can never consult the registry. It held 119.25 USDC across 15 demo
+  pools (max 1 participant each, names like `e2e-test`) — demo residue, not migrated.
+
+## goalId schema changed — BREAKING
+
+```
+old: keccak256(abi.encode(uint256 poolId, address participant))
+new: keccak256(abi.encode(address pools, uint256 poolId, address participant, uint64 periodStart))
+```
+
+`pools` domain-separates the registry. HealthVerdict is a standalone contract that several
+HealthPools may share; keyed on `(poolId, participant)` alone, pool id 1 on two deployments
+collides, so a verdict earned against one would satisfy `canSettle` on the other. Redeploying
+HealthPools is exactly what triggers that, so it had to be fixed in the same pass.
+`periodStart` scopes a verdict to one pool period.
+
+`metric` from the original frozen schema was deliberately dropped: a pool has one goalSpec, so
+poolId already pins the metric, and hashing a free-form string would force identical
+canonicalization across Solidity and two TypeScript call sites for no disambiguation gain.
+
+Four layers must agree. They are pinned by tests, and the app no longer duplicates the formula:
+- `HealthVerdict.computeGoalId(pools, poolId, participant, periodStart)` — canonical, pure
+- `HealthPools.computeGoalId(poolId, participant)` — view, reads periodStart from storage
+- `cre/wf-goal-verification/main.ts` + `cre/src/dry-run.ts` — from config.json
+- `app/lib/server/verdict.ts` — now **reads** the id from HealthPools instead of re-deriving it
+
+## Verified
+
+- 65/65 Foundry tests (3 new: domain separation across deployments, distinct-per-period,
+  registry/pools agreement). CRE + app typecheck clean.
+- Three-way live agreement on Arc: CRE dry-run goalId == live `HealthPools.computeGoalId`
+  == live `HealthVerdict.computeGoalId` = `0x819ca618…ea692`.
+- On-chain gate proof re-run against the new registry: two participants, identical passing
+  oracle results, only the verdict-backed one paid (+2.00 USDC vs +0).
+  Settle tx `0xfdaff54d7a38d0c38a2ac94048086ef95b4475566dc7e9084b48d20bc34d28f6`.
+
+## What is still NOT done (path B is wired, not yet flowing)
+
+1. **`authorizedKeys` is still `[]`.** Empty is valid only for `cre workflow simulate`; the CRE
+   gateway rejects a *deployed* HTTP trigger with no keys, so it fails closed — this is a
+   deploy blocker, not an open hole. It needs the EVM address whose key signs the Confidential
+   AI Attester's `cre_callback` POST, as
+   `{ "type": "KEY_TYPE_ECDSA_EVM", "publicKey": "0x…" }`. That value comes from the Attester
+   service and is the one genuinely external unknown left.
+2. **The workflow is not deployed to a DON.** Until it is, nothing ever calls the forwarder, so
+   `onReport` stays unused even though it is now enabled.
+3. **Path A and path B are still the same trust root.** The registry's `attester` is the oracle
+   EOA `0xA56e…F7F2D`, the same key that signs `recordResult`. Until the DON is the writer, the
+   gate proves the pipeline works but does not add an independent party.

@@ -14,8 +14,11 @@
 //
 // Response JSON:
 //   { attesterId: string }
-//   On a missing key or attester error the id is a "mock-<random>" id; the
-//   result route resolves a mock id to a deterministic completed verdict.
+//   On a missing key or attester error the id is a "fail-<random>" id, which the
+//   result route resolves to an UNVERIFIED verdict that is never recorded — a
+//   broken or unconfigured attester can never mint a passing result. Only with
+//   DEMO_MODE explicitly on is a "mock-<random>" id returned instead, which does
+//   resolve to a verified verdict (local demos only).
 //
 // Privacy: the document bytes are sent only to the attester for inference. They
 // are NOT persisted to disk or chain and are never logged here.
@@ -70,7 +73,7 @@ export async function POST(request: Request) {
     }
 
     // submitInference never throws: on a missing key or attester error it
-    // returns a deterministic mock id and logs a clear warning.
+    // returns a fail id (or, with DEMO_MODE on, a mock id) and logs loudly.
     const attesterId = await submitInference(
       goalSpec,
       fileBase64,

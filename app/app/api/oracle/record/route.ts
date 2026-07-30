@@ -10,10 +10,11 @@
 // Returns: { txHash, verdict, multiplierBps, streakDays, nullifierHash }
 
 import { timingSafeEqual } from "crypto";
-import { isAddress, type Address } from "viem";
+import { isAddress, type Address, type Hex } from "viem";
 import { getProgress, isConnected } from "@/lib/server/junction";
 import { getVerification } from "@/lib/server/world";
 import { deriveMultiplierBps, recordResult } from "@/lib/server/oracle";
+import { recordVerdict, VERDICT_FACETS } from "@/lib/server/verdict";
 import { requireEnv } from "@/lib/server/env";
 import { errorMessage, jsonError, readJsonBody } from "@/lib/server/http";
 
@@ -76,12 +77,62 @@ export async function POST(request: Request) {
     const verdict = progress.streakDays >= goalDays;
     const multiplierBps = deriveMultiplierBps(progress.baselineWeekAvg);
 
-    const txHash = await recordResult(
-      BigInt(poolId),
-      address as Address,
-      verdict,
-      multiplierBps,
-    );
+    // STEP 1 — the pool result. One-shot per participant per pool; an
+    // ALREADY_RECORDED revert means an earlier call landed it, so fall through
+    // rather than failing, otherwise a retry can never complete step 2.
+    let txHash: Hex | undefined;
+    try {
+      txHash = await recordResult(
+        BigInt(poolId),
+        address as Address,
+        verdict,
+        multiplierBps,
+      );
+    } catch (err) {
+      const message = errorMessage(err);
+      if (!message.includes("ALREADY_RECORDED")) {
+        return jsonError(500, `Recording the result on-chain failed: ${message}`);
+      }
+    }
+
+    // STEP 2 — the Chainlink verdict registry, which gates settlement.
+    //
+    // HealthPools.settle() pays a participant only when canSettle(goalId) is
+    // true. recordResult alone is NOT enough: without this write a passing
+    // wearable streak settles to ZERO while the response says verdict:true.
+    //
+    // Only written for a PASS. recordVerdict is one-shot, so recording a failing
+    // verdict here would permanently block a later passing one for the same goal
+    // (only the registry owner could override it).
+    if (verdict) {
+      try {
+        const vr = await recordVerdict(
+          BigInt(poolId),
+          address as Address,
+          true,
+          // A streak threshold check against provider data is deterministic, not
+          // a probabilistic judgement.
+          "high",
+          `junction:${address}:${progress.streakDays}d`,
+          // Wearable evidence — NOT AI-attested. Must not claim a TEE inference
+          // that never happened.
+          VERDICT_FACETS.wearable,
+        );
+        console.log(`[oracle] HealthVerdict registry: ${vr.status}`);
+      } catch (e) {
+        const message = errorMessage(e);
+        console.error(
+          `[oracle] registry write FAILED for pool ${String(poolId)} / ${address} — ` +
+            `participant is NOT settleable until this succeeds: ${message}`,
+        );
+        return jsonError(
+          502,
+          `Result recorded on-chain, but the Chainlink verdict registry write ` +
+            `failed, so this goal cannot pay out yet. Retry this request — the ` +
+            `result is already recorded and will not be duplicated. (${message})`,
+        );
+      }
+    }
 
     return Response.json({
       txHash,
