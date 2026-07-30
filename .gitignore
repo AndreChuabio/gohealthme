@@ -25,3 +25,7 @@ __pycache__/
 
 # cre build artifact
 cre/wf-goal-verification/.cre_build_tmp.js
+
+# key material and Circle entity-secret recovery files
+*.pem
+*-recovery-file.json
