@@ -12,6 +12,14 @@ import { arcEvmNetwork } from "@/lib/dynamic";
 // Arc-only. Sepolia was removed with the dropped ENS work — its unreachable
 // default RPC was timing out in the wallet connector (UnknownRpcError).
 const wagmiConfig = createConfig({
+  // Without this, wagmi auto-creates its own injected MetaMask connector
+  // (EIP-6963 discovery) that races Dynamic's connect: it flips wagmi to
+  // "connected" before Dynamic finishes binding, SyncDynamicWagmi sees no
+  // Dynamic wallet and disconnects wagmi, and wagmi's injected disconnect
+  // fires wallet_revokePermissions — revoking the approval the user just
+  // gave. MetaMask >=13.41 honors that revoke, so sign-in always failed.
+  // Dynamic must stay the only wallet lifecycle owner.
+  multiInjectedProviderDiscovery: false,
   chains: [arcTestnet],
   transports: {
     [arcTestnet.id]: fallback([
@@ -58,13 +66,11 @@ export default function Providers({ children }: { children: ReactNode }) {
         // own signature separately, so no login signature is needed.
         initialAuthenticationMode: "connect-only",
         walletConnectors: [EthereumWalletConnectors],
-        // Dynamic's default (useMetamaskSdk: true) routes MetaMask through its
-        // new multichain "connect" SDK, which establishes a MetaMask connection
-        // but does NOT bind the wallet into Dynamic state in connect-only mode —
-        // primaryWallet/userWallets stay empty, so the app never sees the wallet
-        // and sign-in never flips. Forcing the classic injected/EIP-6963
-        // connector makes primaryWallet populate reliably.
-        useMetamaskSdk: false,
+        // The metamask-evm connector before 4.6.11 connected the wallet but
+        // never bound it into Dynamic state in connect-only mode (the old
+        // useMetamaskSdk:false workaround stopped covering it once MetaMask
+        // 13.41 shipped). SDK 4.95.1 pins the fixed connector, which delegates
+        // to the injected EIP-6963 provider when the extension is installed.
         overrides: { evmNetworks: [arcEvmNetwork] },
         // Don't show Dynamic's per-transaction confirmation modal for the
         // embedded (email) wallet — email-login users sign without an extra
